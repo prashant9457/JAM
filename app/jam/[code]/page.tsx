@@ -1,39 +1,28 @@
-export default function Home() {
+import { Suspense } from "react";
+import JamRoom from "@/components/jam/JamRoom";
+
+type PageProps = {
+  params: Promise<{
+    code: string;
+  }>;
+};
+
+async function RoomContent({ params }: PageProps) {
+  const { code } = await params;
+
+  return <JamRoom code={code} />;
+}
+
+export default function JamPage({ params }: PageProps) {
   return (
-    <div className="app">
-
-      {/* Left Sidebar */}
-      <aside className="sidebar">
-        <h2>My Music</h2>
-        <p>Home</p>
-        <p>Search</p>
-        <p>Your Library</p>
-      </aside>
-
-      {/* Main Content */}
-      <main className="content">
-        <h1>Good evening</h1>
-
-        <div className="cards">
-          <div className="card">Playlist 1</div>
-          <div className="card">Playlist 2</div>
-          <div className="card">Playlist 3</div>
-        </div>
-      </main>
-
-      {/* Right Sidebar */}
-      <aside className="rightbar">
-        <h2>Now Playing</h2>
-        <p>No song selected</p>
-      </aside>
-
-      {/* Bottom Player */}
-      <footer className="player">
-        <button>⏮</button>
-        <button>▶</button>
-        <button>⏭</button>
-      </footer>
-
-    </div>
+    <Suspense
+      fallback={
+        <main className="grid min-h-dvh place-items-center bg-neutral-950 text-neutral-400">
+          Loading jam room…
+        </main>
+      }
+    >
+      <RoomContent params={params} />
+    </Suspense>
   );
 }

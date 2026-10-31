@@ -4,17 +4,25 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "dev:server": "node --watch --experimental-strip-types server/index.ts",
+    "build": "next build --webpack",
     "start": "next start",
+    "start:server": "node --experimental-strip-types server/index.ts",
     "lint": "eslint"
   },
   "dependencies": {
+    "lucide-react": "^1.66.0",
     "next": "16.4.3",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4"
+  },
+  "engines": {
+    "node": ">=22.6.0"
   },
   "devDependencies": {
-    "@tailwindcss/turbopack": "^4",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
