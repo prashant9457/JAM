@@ -244,8 +244,9 @@ export class RoomManager {
       throw new RoomError("NO_TRACK_SELECTED", "Select a track before starting playback.");
     }
 
+    const trackId = room.playback.trackId;
     room.playback = { ...room.playback, status: "paused", positionSeconds: this.currentPosition(room.playback), startsAtMs: null };
-    room.sync = { trackId: room.playback.trackId, readyParticipantIds: new Set() };
+    room.sync = { trackId, readyParticipantIds: new Set() };
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
