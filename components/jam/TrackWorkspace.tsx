@@ -132,7 +132,6 @@ export default function TrackWorkspace({
         <div className="grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(110px,0.7fr)] gap-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,34%)] md:grid-rows-1 md:gap-6">
           <div className="flex min-h-0 min-w-0 items-center justify-center">
             <YouTubeVideo
-              key={playback.trackId ?? "empty"}
               playback={playback}
               serverClockOffsetMs={serverClockOffsetMs}
               onDurationChange={onDurationChange}

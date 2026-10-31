@@ -36,11 +36,13 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
   const playerRef = useRef<YouTubePlayerState | null>(null);
   const playbackStatus = playback.status;
   const trackId = playback.trackId;
+  const hasTrack = trackId !== null;
   const positionSeconds = playback.positionSeconds;
   const startsAtMs = playback.startsAtMs;
   const playbackRef = useRef<PlaybackState>(playback);
   const durationRef = useRef(0);
   const onEndedRef = useRef(onEnded);
+  const onDurationChangeRef = useRef(onDurationChange);
   const onPlaybackReadyRef = useRef(onPlaybackReady);
   const onPreparationReadyRef = useRef(onPreparationReady);
   const onPreparationErrorRef = useRef(onPreparationError);
@@ -51,6 +53,7 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
   const preparationReportedRef = useRef(false);
   const warmupCheckTimerRef = useRef<number | null>(null);
   const primedTrackIdRef = useRef<string | null>(null);
+  const loadedTrackIdRef = useRef<string | null>(null);
   const readyReportedRef = useRef<string | null>(null);
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState("");
@@ -59,6 +62,7 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
   useEffect(() => {
     onEndedRef.current = onEnded;
   }, [onEnded]);
+  useEffect(() => { onDurationChangeRef.current = onDurationChange; }, [onDurationChange]);
 
   useEffect(() => { onPlaybackReadyRef.current = onPlaybackReady; }, [onPlaybackReady]);
   useEffect(() => { onPreparationReadyRef.current = onPreparationReady; }, [onPreparationReady]);
@@ -83,6 +87,12 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
     void loadYouTubeIframeApi()
       .then((youtube) => {
         if (cancelled || !mountRef.current || !trackId) return;
+        preparationReportedRef.current = false;
+        readyReportedRef.current = null;
+        primedTrackIdRef.current = null;
+        setPlayerError("");
+        setAutoplayBlocked(false);
+        loadedTrackIdRef.current = trackId;
 
         player = new youtube.Player(mountRef.current, {
           videoId: trackId,
@@ -105,10 +115,13 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
               const duration = player?.getDuration() ?? 0;
               if (duration > 0) {
                 durationRef.current = duration;
-                onDurationChange(duration);
+                onDurationChangeRef.current(duration);
               }
               const initialPlayback = playbackRef.current;
-              if (!isSyncingRef.current && initialPlayback.trackId) {
+              if (initialPlayback.trackId && initialPlayback.trackId !== loadedTrackIdRef.current) {
+                loadedTrackIdRef.current = initialPlayback.trackId;
+                player?.cueVideoById({ videoId: initialPlayback.trackId, startSeconds: initialPlayback.positionSeconds });
+              } else if (!isSyncingRef.current && initialPlayback.trackId) {
                 // A muted play request makes YouTube fetch media; a cue alone only prepares metadata.
                 player?.mute();
                 const initialPosition = initialPlayback.status === "playing"
@@ -162,6 +175,13 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
               if (event.data === 1) {
                 setAutoplayBlocked(false);
                 if (playbackRef.current.status !== "playing" && !isPreparingRef.current && !isSyncingRef.current) window.setTimeout(() => player?.pauseVideo(), 100);
+                if (playbackRef.current.status === "playing" && !isPreparingRef.current && !isSyncingRef.current) {
+                  window.setTimeout(() => {
+                    if (!player || player.getPlayerState() !== 1) return;
+                    const target = expectedPosition(playbackRef.current, Date.now() + clockOffsetRef.current);
+                    if (Math.abs(target - player.getCurrentTime()) > 2.5) player.seekTo(target, false);
+                  }, 200);
+                }
               } else if (event.data === 0) {
                 onEndedRef.current?.();
               }
@@ -188,9 +208,24 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
       if (warmupCheckTimerRef.current !== null) window.clearTimeout(warmupCheckTimerRef.current);
       warmupCheckTimerRef.current = null;
       playerRef.current = null;
+      setPlayerReady(false);
       player?.destroy();
     };
-  }, [onDurationChange, trackId]);
+  }, [hasTrack]);
+
+  // Keep the IFrame instance alive across queue changes; recreating it can lose autoplay eligibility.
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player || !playerReady || !trackId || trackId === loadedTrackIdRef.current) return;
+    loadedTrackIdRef.current = trackId;
+    primedTrackIdRef.current = null;
+    preparationReportedRef.current = false;
+    readyReportedRef.current = null;
+    setAutoplayBlocked(false);
+    setPlayerError("");
+    warmupStartedAtRef.current = performance.now();
+    if (!isSyncing) player.cueVideoById({ videoId: trackId, startSeconds: positionSeconds });
+  }, [trackId, playerReady, isSyncing, positionSeconds]);
 
   // Apply the server's scheduled timeline whenever the host changes playback state.
   useEffect(() => {
@@ -233,25 +268,38 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
     const player = playerRef.current;
     if (!player || !playerReady || !isSyncing || !trackId) return;
     readyReportedRef.current = null;
-    if (primedTrackIdRef.current === trackId && getLoadedSeconds(player) >= getRequiredLoadedSeconds(player)) {
+    const bufferReady = primedTrackIdRef.current === trackId && getLoadedSeconds(player) >= getRequiredLoadedSeconds(player);
+    if (bufferReady && player.getPlayerState() === 1) {
       readyReportedRef.current = trackId;
       onPlaybackReadyRef.current?.(trackId);
       return;
     }
     preparationReportedRef.current = false;
     warmupStartedAtRef.current = performance.now();
-    player.cueVideoById({ videoId: trackId, startSeconds: positionSeconds });
+    player.mute();
+    if (bufferReady) {
+      player.seekTo(positionSeconds, true);
+      player.playVideo();
+    } else {
+      player.cueVideoById({ videoId: trackId, startSeconds: positionSeconds });
+    }
   }, [isSyncing, playerReady, trackId, positionSeconds]);
 
-  // Periodic drift correction keeps clients near the shared timeline.
+  // Correct real playback drift, but never seek while YouTube is already buffering.
   useEffect(() => {
     const player = playerRef.current;
     if (!player || !playerReady || playbackStatus !== "playing") return;
 
     const interval = window.setInterval(() => {
       const expected = expectedPosition(playbackRef.current, Date.now() + serverClockOffsetMs);
-      if (Math.abs(expected - player.getCurrentTime()) > 1.5) player.seekTo(expected, true);
-      if (player.getPlayerState() !== 1) player.playVideo();
+      const playerState = player.getPlayerState();
+      if (playerState === 3) return;
+      if (playerState !== 1) {
+        player.playVideo();
+        return;
+      }
+      // Never seek during buffering or force a new network request during background correction.
+      if (Math.abs(expected - player.getCurrentTime()) > 2.5) player.seekTo(expected, false);
     }, 3_000);
 
     return () => window.clearInterval(interval);
@@ -263,7 +311,7 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
       const duration = playerRef.current?.getDuration() ?? 0;
       if (duration > 0 && Math.abs(duration - durationRef.current) > 1) {
         durationRef.current = duration;
-        onDurationChange(duration);
+        onDurationChangeRef.current(duration);
       }
     }, 2_000);
     return () => window.clearInterval(interval);
