@@ -37,6 +37,8 @@ export type RoomSnapshot = {
   hostParticipantId: string;
   participants: Participant[];
   playback: PlaybackState;
+  /** Present while clients prepare the selected YouTube player before a shared start. */
+  sync: { trackId: string; readyParticipantIds: string[] } | null;
   queue: QueueItem[];
   messages: ChatMessage[];
   updatedAtMs: number;
@@ -110,6 +112,7 @@ export type ClientToServerEvents = {
   ) => void;
   "playback:ended": (ack: (result: ApiResult<RoomSnapshot>) => void) => void;
   "playback:play": (ack: (result: ApiResult<RoomSnapshot>) => void) => void;
+  "playback:ready": (payload: { trackId: string }) => void;
   "playback:pause": (ack: (result: ApiResult<RoomSnapshot>) => void) => void;
   "playback:seek": (
     payload: { positionSeconds: number },

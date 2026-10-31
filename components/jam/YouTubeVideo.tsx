@@ -12,6 +12,10 @@ type YouTubeVideoProps = {
   mediaType: "music" | "video";
   onEnded?: () => void;
   onFullscreenFallbackChange?: (fullscreen: boolean) => void;
+  isSyncing?: boolean;
+  onPlaybackReady?: (trackId: string) => void;
+  readyCount: number;
+  participantCount: number;
 };
 
 export default function YouTubeVideo({
@@ -21,6 +25,10 @@ export default function YouTubeVideo({
   mediaType,
   onEnded,
   onFullscreenFallbackChange,
+  isSyncing,
+  onPlaybackReady,
+  readyCount,
+  participantCount,
 }: YouTubeVideoProps) {
   const frameRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -29,6 +37,8 @@ export default function YouTubeVideo({
     serverClockOffsetMs,
     onDurationChange,
     onEnded,
+    isSyncing,
+    onPlaybackReady,
   });
 
   useEffect(() => {
@@ -144,6 +154,15 @@ export default function YouTubeVideo({
               >
                 Open on YouTube <ExternalLink size={14} />
               </a>
+            </div>
+          </div>
+        )}
+        {isSyncing && !playerError && (
+          <div role="status" aria-live="polite" className="absolute inset-0 z-20 grid place-items-center bg-black/75 p-6 text-center backdrop-blur-sm">
+            <div>
+              <div className="mx-auto mb-3 h-7 w-7 animate-spin rounded-full border-2 border-white/25 border-t-white" />
+              <p className="text-sm font-medium text-white">Syncing playback</p>
+              <p className="mt-1 text-xs text-neutral-300">{readyCount} of {participantCount} ready · Waiting for everyone…</p>
             </div>
           </div>
         )}

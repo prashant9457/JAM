@@ -22,6 +22,10 @@ type TrackWorkspaceProps = {
   onTrackEnded?: () => void;
   onFullscreenFallbackChange: (fullscreen: boolean) => void;
   isFullscreenFallback: boolean;
+  isSyncing: boolean;
+  onPlaybackReady: (trackId: string) => void;
+  readyCount: number;
+  participantCount: number;
 };
 
 export default function TrackWorkspace({
@@ -38,6 +42,10 @@ export default function TrackWorkspace({
   onTrackEnded,
   onFullscreenFallbackChange,
   isFullscreenFallback,
+  isSyncing,
+  onPlaybackReady,
+  readyCount,
+  participantCount,
 }: TrackWorkspaceProps) {
   const [videoUrl, setVideoUrl] = useState("");
   const [urlError, setUrlError] = useState("");
@@ -125,6 +133,10 @@ export default function TrackWorkspace({
               mediaType={playback.mediaType}
               onEnded={onTrackEnded}
               onFullscreenFallbackChange={onFullscreenFallbackChange}
+              isSyncing={isSyncing}
+              onPlaybackReady={onPlaybackReady}
+              readyCount={readyCount}
+              participantCount={participantCount}
             />
           </div>
           <QueuePanel

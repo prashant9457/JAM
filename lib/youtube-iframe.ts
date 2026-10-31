@@ -1,4 +1,5 @@
 export type YouTubePlayerState = {
+  cueVideoById(video: string | { videoId: string; startSeconds?: number }): void;
   playVideo(): void;
   pauseVideo(): void;
   seekTo(seconds: number, allowSeekAhead: boolean): void;

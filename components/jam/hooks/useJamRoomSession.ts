@@ -151,6 +151,11 @@ export function useJamRoomSession(code: string) {
     });
   }, []);
 
+  const reportPlaybackReady = useCallback((trackId: string) => {
+    const socket = socketRef.current;
+    if (socket?.connected) socket.emit("playback:ready", { trackId });
+  }, []);
+
   const leaveRoom = useCallback(() => {
     const socket = socketRef.current;
     if (!socket?.connected) {
@@ -176,6 +181,7 @@ export function useJamRoomSession(code: string) {
     roomEnded,
     redirectSeconds,
     sendControl,
+    reportPlaybackReady,
     sendChatMessage,
     leaveRoom,
   };

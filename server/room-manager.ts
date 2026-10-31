@@ -22,6 +22,7 @@ type RoomRecord = {
   hostTokenDigest: Buffer;
   participantsBySocket: Map<string, Participant>;
   playback: PlaybackState;
+  sync: { trackId: string; readyParticipantIds: Set<string> } | null;
   queue: QueueItem[];
   messages: ChatMessage[];
   updatedAtMs: number;
@@ -63,6 +64,7 @@ export class RoomManager {
         [socketId, { id: hostParticipantId, name: this.makeName("Host"), isHost: true }],
       ]),
       playback: { status: "idle", mediaType: "video", trackId: DEFAULT_VIDEO_ID, positionSeconds: 0, startsAtMs: null },
+      sync: null,
       queue: [],
       messages: [],
       updatedAtMs: now,
@@ -106,6 +108,7 @@ export class RoomManager {
     if (!room) return undefined;
 
     room.participantsBySocket.delete(socketId);
+    this.startIfEveryoneReady(room);
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
@@ -134,6 +137,7 @@ export class RoomManager {
     }
 
     room.playback = { status: "idle", mediaType: "video", trackId, positionSeconds: 0, startsAtMs: null };
+    room.sync = null;
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
@@ -144,6 +148,7 @@ export class RoomManager {
       throw new RoomError("INVALID_INPUT", "Choose music or video.");
     }
     room.playback = { ...room.playback, mediaType };
+    room.sync = null;
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
@@ -197,12 +202,13 @@ export class RoomManager {
     if (index < 0) throw new RoomError("INVALID_INPUT", "That queue item no longer exists.");
     const [item] = room.queue.splice(index, 1);
     room.playback = {
-      status: "playing",
+      status: "paused",
       mediaType: item.mediaType,
       trackId: item.trackId,
       positionSeconds: 0,
-      startsAtMs: Date.now() + PLAY_SCHEDULE_LEAD_MS,
+      startsAtMs: null,
     };
+    room.sync = { trackId: item.trackId, readyParticipantIds: new Set() };
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
@@ -212,12 +218,13 @@ export class RoomManager {
     const nextItem = room.queue.shift();
     if (nextItem) {
       room.playback = {
-        status: "playing",
+        status: "paused",
         mediaType: nextItem.mediaType,
         trackId: nextItem.trackId,
         positionSeconds: 0,
-        startsAtMs: Date.now() + PLAY_SCHEDULE_LEAD_MS,
+        startsAtMs: null,
       };
+      room.sync = { trackId: nextItem.trackId, readyParticipantIds: new Set() };
     } else {
       room.playback = {
         ...room.playback,
@@ -225,6 +232,7 @@ export class RoomManager {
         positionSeconds: this.currentPosition(room.playback),
         startsAtMs: null,
       };
+      room.sync = null;
     }
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
@@ -236,14 +244,29 @@ export class RoomManager {
       throw new RoomError("NO_TRACK_SELECTED", "Select a track before starting playback.");
     }
 
-    room.playback = {
-      ...room.playback,
-      status: "playing",
-      positionSeconds: this.currentPosition(room.playback),
-      startsAtMs: Date.now() + PLAY_SCHEDULE_LEAD_MS,
-    };
+    room.playback = { ...room.playback, status: "paused", positionSeconds: this.currentPosition(room.playback), startsAtMs: null };
+    room.sync = { trackId: room.playback.trackId, readyParticipantIds: new Set() };
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
+  }
+
+  /** Start only once every connected participant reports that their player is cued. */
+  markPlaybackReady(code: string, socketId: string, trackId: unknown): RoomSnapshot | undefined {
+    const room = this.rooms.get(code);
+    const participant = room?.participantsBySocket.get(socketId);
+    if (!room || !participant || typeof trackId !== "string" || !room.sync || room.sync.trackId !== trackId) return;
+    room.sync.readyParticipantIds.add(participant.id);
+    this.startIfEveryoneReady(room);
+    room.updatedAtMs = Date.now();
+    return this.toSnapshot(room);
+  }
+
+  private startIfEveryoneReady(room: RoomRecord): void {
+    if (!room.sync || room.participantsBySocket.size === 0) return;
+    const connectedIds = [...room.participantsBySocket.values()].map((participant) => participant.id);
+    if (!connectedIds.every((id) => room.sync?.readyParticipantIds.has(id))) return;
+    room.playback = { ...room.playback, status: "playing", startsAtMs: Date.now() + PLAY_SCHEDULE_LEAD_MS };
+    room.sync = null;
   }
 
   pause(code: string, participantId: string): RoomSnapshot {
@@ -254,6 +277,7 @@ export class RoomManager {
       positionSeconds: this.currentPosition(room.playback),
       startsAtMs: null,
     };
+    room.sync = null;
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
@@ -269,6 +293,7 @@ export class RoomManager {
       positionSeconds,
       startsAtMs: room.playback.status === "playing" ? Date.now() + 300 : null,
     };
+    room.sync = null;
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
@@ -349,6 +374,7 @@ export class RoomManager {
       hostParticipantId: room.hostParticipantId,
       participants: [...room.participantsBySocket.values()],
       playback: { ...room.playback },
+      sync: room.sync ? { trackId: room.sync.trackId, readyParticipantIds: [...room.sync.readyParticipantIds] } : null,
       queue: [...room.queue],
       messages: [...room.messages],
       updatedAtMs: room.updatedAtMs,

@@ -9,6 +9,8 @@ type UseSyncedYouTubePlayerOptions = {
   serverClockOffsetMs: number;
   onDurationChange: (durationSeconds: number) => void;
   onEnded?: () => void;
+  isSyncing?: boolean;
+  onPlaybackReady?: (trackId: string) => void;
 };
 
 function expectedPosition(playback: PlaybackState, serverNowMs: number): number {
@@ -16,7 +18,7 @@ function expectedPosition(playback: PlaybackState, serverNowMs: number): number 
   return playback.positionSeconds + Math.max(0, serverNowMs - playback.startsAtMs) / 1_000;
 }
 
-export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurationChange, onEnded }: UseSyncedYouTubePlayerOptions) {
+export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurationChange, onEnded, isSyncing, onPlaybackReady }: UseSyncedYouTubePlayerOptions) {
   const mountRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YouTubePlayerState | null>(null);
   const playbackStatus = playback.status;
@@ -26,6 +28,8 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
   const playbackRef = useRef<PlaybackState>(playback);
   const durationRef = useRef(0);
   const onEndedRef = useRef(onEnded);
+  const onPlaybackReadyRef = useRef(onPlaybackReady);
+  const readyReportedRef = useRef<string | null>(null);
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState("");
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
@@ -33,6 +37,8 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
   useEffect(() => {
     onEndedRef.current = onEnded;
   }, [onEnded]);
+
+  useEffect(() => { onPlaybackReadyRef.current = onPlaybackReady; }, [onPlaybackReady]);
 
   useEffect(() => {
     playbackRef.current = { status: playbackStatus, mediaType: playback.mediaType, trackId, positionSeconds, startsAtMs };
@@ -71,6 +77,14 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
               setPlayerReady(true);
             },
             onStateChange: (event) => {
+              // YouTube state 5 means the requested video has been cued and is ready for play.
+              if (event.data === 5 && playbackRef.current.status !== "playing") {
+                const activeTrack = playbackRef.current.trackId;
+                if (activeTrack && readyReportedRef.current !== activeTrack) {
+                  readyReportedRef.current = activeTrack;
+                  onPlaybackReadyRef.current?.(activeTrack);
+                }
+              }
               // Keep playback host-controlled if a player event starts audio unexpectedly.
               if (event.data === 1) {
                 setAutoplayBlocked(false);
@@ -131,6 +145,13 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
       window.clearTimeout(autoplayTimer);
     };
   }, [playerReady, playbackStatus, playback.mediaType, trackId, positionSeconds, startsAtMs, serverClockOffsetMs]);
+
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player || !playerReady || !isSyncing || !trackId) return;
+    readyReportedRef.current = null;
+    player.cueVideoById({ videoId: trackId, startSeconds: positionSeconds });
+  }, [isSyncing, playerReady, trackId, positionSeconds]);
 
   // Periodic drift correction keeps clients near the shared timeline.
   useEffect(() => {

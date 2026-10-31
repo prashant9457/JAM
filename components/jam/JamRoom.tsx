@@ -79,6 +79,10 @@ export default function JamRoom({ code }: JamRoomProps) {
           onTrackEnded={session.isHost ? controls.onTrackEnded : undefined}
           isFullscreenFallback={isVideoFullscreenFallback}
           onFullscreenFallbackChange={setIsVideoFullscreenFallback}
+          isSyncing={Boolean(session.room?.sync)}
+          onPlaybackReady={session.reportPlaybackReady}
+          readyCount={session.room?.sync?.readyParticipantIds.length ?? 0}
+          participantCount={session.room?.participants.length ?? 0}
         />
 
         <div className="hidden min-h-0 2xl:block">
@@ -110,6 +114,7 @@ export default function JamRoom({ code }: JamRoomProps) {
       <PlayerBar
         trackSelected={Boolean(playback?.trackId)}
         isPlaying={Boolean(isPlaying)}
+        isSyncing={Boolean(session.room?.sync)}
         isHost={session.isHost}
         positionSeconds={positionSeconds}
         durationSeconds={videoDurationSeconds}

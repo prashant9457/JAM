@@ -1,8 +1,9 @@
-import { Pause, Play } from "lucide-react";
+import { LoaderCircle, Pause, Play } from "lucide-react";
 
 type PlayerBarProps = {
   trackSelected: boolean;
   isPlaying: boolean;
+  isSyncing: boolean;
   isHost: boolean;
   positionSeconds: number;
   durationSeconds: number;
@@ -19,12 +20,13 @@ function formatTime(seconds: number): string {
 export default function PlayerBar({
   trackSelected,
   isPlaying,
+  isSyncing,
   isHost,
   positionSeconds,
   durationSeconds,
   onTogglePlayback,
 }: PlayerBarProps) {
-  const controlDisabled = !isHost || !trackSelected;
+  const controlDisabled = !isHost || !trackSelected || isSyncing;
   const progress = durationSeconds > 0
     ? Math.min(100, (positionSeconds / durationSeconds) * 100)
     : 0;
@@ -42,11 +44,11 @@ export default function PlayerBar({
             type="button"
             onClick={onTogglePlayback}
             disabled={controlDisabled}
-            aria-label={isPlaying ? "Pause video for everyone" : "Play video for everyone"}
+            aria-label={isSyncing ? "Waiting for participants to sync" : isPlaying ? "Pause video for everyone" : "Play video for everyone"}
             title={!isHost ? "Only the host can control playback" : undefined}
             className="grid h-9 w-9 place-items-center rounded-full bg-white text-black hover:bg-neutral-200 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-500"
           >
-            {isPlaying ? <Pause fill="currentColor" size={18} /> : <Play fill="currentColor" size={18} />}
+            {isSyncing ? <LoaderCircle className="animate-spin" size={18} /> : isPlaying ? <Pause fill="currentColor" size={18} /> : <Play fill="currentColor" size={18} />}
           </button>
         </div>
 

@@ -28,6 +28,12 @@ export function registerPlaybackHandlers(socket: JamSocket, services: SocketServ
   socket.on("playback:play", (ack) => {
     runHostCommand(socket, services, ack, (code, participantId) => rooms.play(code, participantId));
   });
+  socket.on("playback:ready", (payload) => {
+    const code = socket.data.roomCode;
+    if (!code) return;
+    const room = rooms.markPlaybackReady(code, socket.id, payload?.trackId);
+    if (room) services.io.to(code).emit("room:state", room);
+  });
   socket.on("playback:pause", (ack) => {
     runHostCommand(socket, services, ack, (code, participantId) => rooms.pause(code, participantId));
   });
