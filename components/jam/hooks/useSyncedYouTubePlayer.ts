@@ -11,6 +11,9 @@ type UseSyncedYouTubePlayerOptions = {
   onEnded?: () => void;
   isSyncing?: boolean;
   onPlaybackReady?: (trackId: string) => void;
+  isPreparing?: boolean;
+  onPreparationReady?: (measurement: { startupMs: number; loadedSeconds: number }) => void;
+  onPreparationError?: (message: string) => void;
 };
 
 function expectedPosition(playback: PlaybackState, serverNowMs: number): number {
@@ -18,7 +21,17 @@ function expectedPosition(playback: PlaybackState, serverNowMs: number): number 
   return playback.positionSeconds + Math.max(0, serverNowMs - playback.startsAtMs) / 1_000;
 }
 
-export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurationChange, onEnded, isSyncing, onPlaybackReady }: UseSyncedYouTubePlayerOptions) {
+function getLoadedSeconds(player: YouTubePlayerState): number {
+  const duration = player.getDuration();
+  return duration > 0 ? duration * player.getVideoLoadedFraction() : 0;
+}
+
+function getRequiredLoadedSeconds(player: YouTubePlayerState): number {
+  const duration = player.getDuration();
+  return Math.min(2.5, Math.max(0.5, duration > 0 ? duration * 0.02 : 1));
+}
+
+export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurationChange, onEnded, isSyncing, onPlaybackReady, isPreparing, onPreparationReady, onPreparationError }: UseSyncedYouTubePlayerOptions) {
   const mountRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YouTubePlayerState | null>(null);
   const playbackStatus = playback.status;
@@ -29,6 +42,15 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
   const durationRef = useRef(0);
   const onEndedRef = useRef(onEnded);
   const onPlaybackReadyRef = useRef(onPlaybackReady);
+  const onPreparationReadyRef = useRef(onPreparationReady);
+  const onPreparationErrorRef = useRef(onPreparationError);
+  const isPreparingRef = useRef(isPreparing);
+  const isSyncingRef = useRef(isSyncing);
+  const clockOffsetRef = useRef(serverClockOffsetMs);
+  const warmupStartedAtRef = useRef<number | null>(null);
+  const preparationReportedRef = useRef(false);
+  const warmupCheckTimerRef = useRef<number | null>(null);
+  const primedTrackIdRef = useRef<string | null>(null);
   const readyReportedRef = useRef<string | null>(null);
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState("");
@@ -39,6 +61,11 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
   }, [onEnded]);
 
   useEffect(() => { onPlaybackReadyRef.current = onPlaybackReady; }, [onPlaybackReady]);
+  useEffect(() => { onPreparationReadyRef.current = onPreparationReady; }, [onPreparationReady]);
+  useEffect(() => { onPreparationErrorRef.current = onPreparationError; }, [onPreparationError]);
+  useEffect(() => { isPreparingRef.current = isPreparing; }, [isPreparing]);
+  useEffect(() => { isSyncingRef.current = isSyncing; }, [isSyncing]);
+  useEffect(() => { clockOffsetRef.current = serverClockOffsetMs; }, [serverClockOffsetMs]);
 
   useEffect(() => {
     playbackRef.current = { status: playbackStatus, mediaType: playback.mediaType, trackId, positionSeconds, startsAtMs };
@@ -47,6 +74,11 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
   useEffect(() => {
     let cancelled = false;
     let player: YouTubePlayerState | null = null;
+    const preparationTimeout = isPreparing ? window.setTimeout(() => {
+      if (!preparationReportedRef.current) {
+        onPreparationErrorRef.current?.("The video player is taking too long to warm up. You can continue and try playback from the room.");
+      }
+    }, 20_000) : null;
 
     void loadYouTubeIframeApi()
       .then((youtube) => {
@@ -69,44 +101,92 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
             onReady: () => {
               if (cancelled) return;
               playerRef.current = player;
+              warmupStartedAtRef.current = performance.now();
               const duration = player?.getDuration() ?? 0;
               if (duration > 0) {
                 durationRef.current = duration;
                 onDurationChange(duration);
               }
+              const initialPlayback = playbackRef.current;
+              if (!isSyncingRef.current && initialPlayback.trackId) {
+                // A muted play request makes YouTube fetch media; a cue alone only prepares metadata.
+                player?.mute();
+                const initialPosition = initialPlayback.status === "playing"
+                  ? expectedPosition(initialPlayback, Date.now() + clockOffsetRef.current)
+                  : initialPlayback.positionSeconds;
+                player?.seekTo(initialPosition, true);
+                player?.playVideo();
+              }
               setPlayerReady(true);
             },
             onStateChange: (event) => {
               // YouTube state 5 means the requested video has been cued and is ready for play.
-              if (event.data === 5 && playbackRef.current.status !== "playing") {
+              if (event.data === 5 && isSyncingRef.current) {
+                player?.mute();
+                player?.seekTo(playbackRef.current.positionSeconds, true);
+                player?.playVideo();
+              } else if (event.data === 5 && playbackRef.current.status !== "playing") {
                 const activeTrack = playbackRef.current.trackId;
                 if (activeTrack && readyReportedRef.current !== activeTrack) {
                   readyReportedRef.current = activeTrack;
                   onPlaybackReadyRef.current?.(activeTrack);
                 }
               }
+              const isWarming = isPreparingRef.current || isSyncingRef.current;
+              if (event.data === 1 && isWarming && (isSyncingRef.current || !preparationReportedRef.current) && warmupCheckTimerRef.current === null) {
+                const startedAt = warmupStartedAtRef.current ?? performance.now();
+                const checkBufferedAmount = () => {
+                  if (!player) return;
+                  const loadedSeconds = getLoadedSeconds(player);
+                  const elapsedMs = performance.now() - startedAt;
+                  const enoughLoaded = loadedSeconds >= getRequiredLoadedSeconds(player);
+                  if (enoughLoaded || elapsedMs >= 5_000) {
+                    preparationReportedRef.current = true;
+                    warmupCheckTimerRef.current = null;
+                    const activeTrackId = playbackRef.current.trackId;
+                    if (activeTrackId) primedTrackIdRef.current = activeTrackId;
+                    if (isSyncingRef.current && activeTrackId) {
+                      readyReportedRef.current = activeTrackId;
+                      onPlaybackReadyRef.current?.(activeTrackId);
+                    } else {
+                      if (playbackRef.current.status !== "playing") player.pauseVideo();
+                      onPreparationReadyRef.current?.({ startupMs: elapsedMs, loadedSeconds });
+                    }
+                    return;
+                  }
+                  warmupCheckTimerRef.current = window.setTimeout(checkBufferedAmount, 150);
+                };
+                checkBufferedAmount();
+              }
               // Keep playback host-controlled if a player event starts audio unexpectedly.
               if (event.data === 1) {
                 setAutoplayBlocked(false);
-                if (playbackRef.current.status !== "playing") window.setTimeout(() => player?.pauseVideo(), 100);
+                if (playbackRef.current.status !== "playing" && !isPreparingRef.current && !isSyncingRef.current) window.setTimeout(() => player?.pauseVideo(), 100);
               } else if (event.data === 0) {
                 onEndedRef.current?.();
               }
             },
             onError: (event) => {
-              setPlayerError(event.data === 101 || event.data === 150
+              const message = event.data === 101 || event.data === 150
                 ? "This video does not allow embedded playback. Open it on YouTube instead."
-                : "YouTube could not play this video in the embedded player.");
+                : "YouTube could not play this video in the embedded player.";
+              setPlayerError(message);
+              onPreparationErrorRef.current?.(message);
             },
           },
         });
       })
       .catch((error: unknown) => {
-        setPlayerError(error instanceof Error ? error.message : "Could not load YouTube.");
+        const message = error instanceof Error ? error.message : "Could not load YouTube.";
+        setPlayerError(message);
+        onPreparationErrorRef.current?.(message);
       });
 
     return () => {
       cancelled = true;
+      if (preparationTimeout !== null) window.clearTimeout(preparationTimeout);
+      if (warmupCheckTimerRef.current !== null) window.clearTimeout(warmupCheckTimerRef.current);
+      warmupCheckTimerRef.current = null;
       playerRef.current = null;
       player?.destroy();
     };
@@ -116,6 +196,8 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
   useEffect(() => {
     const player = playerRef.current;
     if (!player || !playerReady) return;
+    // The preparation screen owns the muted warm-up player until it is ready to reveal.
+    if (isPreparing || isSyncing) return;
 
     const currentPlayback: PlaybackState = { status: playbackStatus, mediaType: playback.mediaType, trackId, positionSeconds, startsAtMs };
     if (playbackStatus !== "playing") {
@@ -129,6 +211,7 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
     const nowPosition = expectedPosition(currentPlayback, Date.now() + serverClockOffsetMs);
 
     player.pauseVideo();
+    player.unMute();
     player.seekTo(delayMs > 50 ? positionSeconds : nowPosition, true);
 
     const playTimer = window.setTimeout(() => {
@@ -144,12 +227,19 @@ export function useSyncedYouTubePlayer({ playback, serverClockOffsetMs, onDurati
       window.clearTimeout(playTimer);
       window.clearTimeout(autoplayTimer);
     };
-  }, [playerReady, playbackStatus, playback.mediaType, trackId, positionSeconds, startsAtMs, serverClockOffsetMs]);
+  }, [playerReady, isPreparing, isSyncing, playbackStatus, playback.mediaType, trackId, positionSeconds, startsAtMs, serverClockOffsetMs]);
 
   useEffect(() => {
     const player = playerRef.current;
     if (!player || !playerReady || !isSyncing || !trackId) return;
     readyReportedRef.current = null;
+    if (primedTrackIdRef.current === trackId && getLoadedSeconds(player) >= getRequiredLoadedSeconds(player)) {
+      readyReportedRef.current = trackId;
+      onPlaybackReadyRef.current?.(trackId);
+      return;
+    }
+    preparationReportedRef.current = false;
+    warmupStartedAtRef.current = performance.now();
     player.cueVideoById({ videoId: trackId, startSeconds: positionSeconds });
   }, [isSyncing, playerReady, trackId, positionSeconds]);
 

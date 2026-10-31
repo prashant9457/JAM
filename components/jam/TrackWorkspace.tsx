@@ -26,6 +26,9 @@ type TrackWorkspaceProps = {
   onPlaybackReady: (trackId: string) => void;
   readyCount: number;
   participantCount: number;
+  isPreparing: boolean;
+  onPreparationReady: (measurement: { startupMs: number; loadedSeconds: number }) => void;
+  onPreparationError: (message: string) => void;
 };
 
 export default function TrackWorkspace({
@@ -46,6 +49,9 @@ export default function TrackWorkspace({
   onPlaybackReady,
   readyCount,
   participantCount,
+  isPreparing,
+  onPreparationReady,
+  onPreparationError,
 }: TrackWorkspaceProps) {
   const [videoUrl, setVideoUrl] = useState("");
   const [urlError, setUrlError] = useState("");
@@ -137,6 +143,9 @@ export default function TrackWorkspace({
               onPlaybackReady={onPlaybackReady}
               readyCount={readyCount}
               participantCount={participantCount}
+              isPreparing={isPreparing}
+              onPreparationReady={onPreparationReady}
+              onPreparationError={onPreparationError}
             />
           </div>
           <QueuePanel

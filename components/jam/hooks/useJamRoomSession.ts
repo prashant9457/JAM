@@ -17,6 +17,8 @@ export function useJamRoomSession(code: string) {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("connecting");
   const [errorMessage, setErrorMessage] = useState("");
   const [serverClockOffsetMs, setServerClockOffsetMs] = useState(0);
+  const [clockRoundTripMs, setClockRoundTripMs] = useState<number | null>(null);
+  const [isClockSynced, setIsClockSynced] = useState(false);
   const [roomEnded, setRoomEnded] = useState(false);
   const [redirectSeconds, setRedirectSeconds] = useState(15);
 
@@ -26,6 +28,7 @@ export function useJamRoomSession(code: string) {
 
     function joinRoom() {
       setConnectionStatus("connecting");
+      setIsClockSynced(false);
       setErrorMessage("");
       const hostToken = window.sessionStorage.getItem(hostTokenStorageKey(code)) ?? undefined;
 
@@ -56,14 +59,20 @@ export function useJamRoomSession(code: string) {
 
     function onConnectError() {
       setConnectionStatus("reconnecting");
+      setIsClockSynced(false);
     }
 
     function onDisconnect() {
       setConnectionStatus("reconnecting");
+      setIsClockSynced(false);
     }
 
     function updateClockOffset() {
-      void synchronizeClock(socket).then(setServerClockOffsetMs).catch(() => {
+      void synchronizeClock(socket).then(({ offsetMs, roundTripMs }) => {
+        setServerClockOffsetMs(offsetMs);
+        setClockRoundTripMs(roundTripMs);
+        setIsClockSynced(true);
+      }).catch(() => {
         // A transient clock-sync failure should not prevent joining the room.
       });
     }
@@ -177,6 +186,8 @@ export function useJamRoomSession(code: string) {
     errorMessage,
     setErrorMessage,
     serverClockOffsetMs,
+    clockRoundTripMs,
+    isClockSynced,
     isHost,
     roomEnded,
     redirectSeconds,

@@ -54,8 +54,9 @@ export function waitForSocketConnection(socket: JamSocket): Promise<void> {
   });
 }
 
-/** Estimate server-minus-client wall-clock offset with an NTP-style midpoint. */
-export function synchronizeClock(socket: JamSocket): Promise<number> {
+export type ClockSyncResult = { offsetMs: number; roundTripMs: number };
+
+function measureClockOffset(socket: JamSocket): Promise<ClockSyncResult> {
   if (!socket.connected) return Promise.reject(new Error("Socket is not connected."));
 
   const clientSentAtMs = Date.now();
@@ -78,8 +79,21 @@ export function synchronizeClock(socket: JamSocket): Promise<number> {
         }
 
         const clientMidpoint = (clientSentAtMs + clientReceivedAtMs) / 2;
-        resolve(result.data.serverTimeMs - clientMidpoint);
+        resolve({
+          offsetMs: result.data.serverTimeMs - clientMidpoint,
+          roundTripMs: clientReceivedAtMs - clientSentAtMs,
+        });
       },
     );
   });
+}
+
+/** Estimate server time from several probes and select the least delayed sample. */
+export async function synchronizeClock(socket: JamSocket): Promise<ClockSyncResult> {
+  const measurements = await Promise.allSettled(Array.from({ length: 5 }, () => measureClockOffset(socket)));
+  const successful = measurements
+    .filter((result): result is PromiseFulfilledResult<ClockSyncResult> => result.status === "fulfilled")
+    .map((result) => result.value);
+  if (successful.length === 0) throw new Error("Could not synchronize with the room clock.");
+  return successful.reduce((best, sample) => sample.roundTripMs < best.roundTripMs ? sample : best);
 }

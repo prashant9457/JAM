@@ -6,6 +6,7 @@ export type YouTubePlayerState = {
   getCurrentTime(): number;
   getDuration(): number;
   getPlayerState(): number;
+  getVideoLoadedFraction(): number;
   mute(): void;
   unMute(): void;
   destroy(): void;

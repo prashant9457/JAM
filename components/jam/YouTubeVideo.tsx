@@ -16,6 +16,9 @@ type YouTubeVideoProps = {
   onPlaybackReady?: (trackId: string) => void;
   readyCount: number;
   participantCount: number;
+  isPreparing: boolean;
+  onPreparationReady: (measurement: { startupMs: number; loadedSeconds: number }) => void;
+  onPreparationError: (message: string) => void;
 };
 
 export default function YouTubeVideo({
@@ -29,6 +32,9 @@ export default function YouTubeVideo({
   onPlaybackReady,
   readyCount,
   participantCount,
+  isPreparing,
+  onPreparationReady,
+  onPreparationError,
 }: YouTubeVideoProps) {
   const frameRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -39,6 +45,9 @@ export default function YouTubeVideo({
     onEnded,
     isSyncing,
     onPlaybackReady,
+    isPreparing,
+    onPreparationReady,
+    onPreparationError,
   });
 
   useEffect(() => {
