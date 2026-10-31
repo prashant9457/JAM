@@ -48,3 +48,23 @@ shared/jam.ts                Client/server room and Socket.IO contracts
 - `npm run dev:server` — realtime server
 - `npm run lint` — ESLint
 - `npm run build` — production Next.js build
+
+## Production deployment
+
+Deploy the Next.js app and realtime server as separate services. For example, use Vercel for the Next.js app and a Node web service such as Render for the Socket.IO server.
+
+### Realtime service
+
+- Use Node.js 22.6 or newer.
+- Build command: `npm ci`
+- Start command: `npm run start:server`
+- Health check path: `/health`
+- Set `JAM_ALLOWED_ORIGINS` to the exact HTTPS origin of the deployed website. Add custom domains as comma-separated origins when needed.
+- The server reads the host-provided `PORT`; `JAM_SERVER_PORT` remains the local development override.
+
+### Next.js app
+
+- Set `NEXT_PUBLIC_JAM_SERVER_URL` to the realtime service's HTTPS URL, such as `https://jam-realtime.onrender.com`.
+- Deploy the Next.js app with its standard build and start commands.
+
+Room state is in memory. Run one realtime server instance for now; restarts end active rooms, and multiple instances would not share room state.

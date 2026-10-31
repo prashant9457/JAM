@@ -8,14 +8,15 @@ const envFile = fileURLToPath(new URL("../.env", import.meta.url));
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const host = process.env.JAM_SERVER_HOST ?? "0.0.0.0";
-const port = Number(process.env.JAM_SERVER_PORT ?? 4_000);
+// Cloud hosts provide PORT; keep JAM_SERVER_PORT as the convenient local override.
+const port = Number(process.env.PORT ?? process.env.JAM_SERVER_PORT ?? 4_000);
 const origins = (process.env.JAM_ALLOWED_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:3000")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-  throw new Error("JAM_SERVER_PORT must be a valid TCP port.");
+  throw new Error("PORT or JAM_SERVER_PORT must be a valid TCP port.");
 }
 
 const httpServer = createServer((request, response) => {
