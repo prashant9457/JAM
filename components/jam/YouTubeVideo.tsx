@@ -38,7 +38,7 @@ export default function YouTubeVideo({
 }: YouTubeVideoProps) {
   const frameRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const { mountRef, playerReady, playerError, autoplayBlocked, resumePlayback } = useSyncedYouTubePlayer({
+  const { mountRef, playerReady, playerError, autoplayBlocked, hasBegun, resumePlayback } = useSyncedYouTubePlayer({
     playback,
     serverClockOffsetMs,
     onDurationChange,
@@ -80,6 +80,25 @@ export default function YouTubeVideo({
 
   return (
     <section aria-label={mediaType === "video" ? "Shared YouTube video" : "Shared music"} className="flex h-full min-h-0 min-w-0 flex-1 flex-col justify-center">
+      {!hasBegun && !playerError && (
+        <div className="fixed inset-0 z-[210] grid place-items-center bg-[#0b0b0b] px-5 text-center text-white">
+          <div className="w-full max-w-sm">
+            <h1 className="text-lg font-semibold">Begin playing together</h1>
+            <p className="mt-2 text-sm leading-6 text-neutral-400">
+              Both users need to tap Begin video on their own screen to enable playback. Then the host can start the video for everyone.
+            </p>
+            <button
+              type="button"
+              onClick={resumePlayback}
+              disabled={!playerReady}
+              className="mt-5 inline-flex min-h-11 items-center gap-2 rounded-md bg-white px-4 py-2 text-sm font-medium text-neutral-950 hover:bg-neutral-200 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white disabled:cursor-wait disabled:opacity-60"
+            >
+              <Play size={15} fill="currentColor" aria-hidden="true" />
+              {playerReady ? "Begin video" : "Loading player…"}
+            </button>
+          </div>
+        </div>
+      )}
       <div
         ref={frameRef}
         className={`${isFullscreen ? "fixed inset-0 z-[100] h-dvh w-screen max-w-none rounded-none border-0" : "relative mx-auto aspect-video w-full max-w-full rounded-xl border border-neutral-800"} overflow-hidden bg-black`}
