@@ -94,7 +94,6 @@ export function runHostCommand(
     const room = command(roomCode, participantId);
     ack({ ok: true, data: room });
     services.io.to(roomCode).emit("room:state", room);
-    socket.emit("room:state", room);
   } catch (error) {
     ack(failure(error));
   }

@@ -33,6 +33,9 @@ type RoomRecord = {
   code: string;
   hostParticipantId: string;
   hostTokenDigest: Buffer;
+  hostParticipant: Participant;
+  guestSessions: Map<string, Participant>;
+  revision: number;
   participantsBySocket: Map<string, Participant>;
   playback: PlaybackState;
   sync: {
@@ -79,16 +82,19 @@ export class RoomManager {
     const hostToken = randomBytes(32).toString("base64url");
     const hostParticipantId = randomUUID();
     const now = Date.now();
+    const hostParticipant = {
+      id: hostParticipantId,
+      name: this.makeName("Host"),
+      isHost: true,
+    };
     const room: RoomRecord = {
       code,
       hostParticipantId,
       hostTokenDigest: this.digestToken(hostToken),
-      participantsBySocket: new Map([
-        [
-          socketId,
-          { id: hostParticipantId, name: this.makeName("Host"), isHost: true },
-        ],
-      ]),
+      hostParticipant,
+      guestSessions: new Map(),
+      revision: 0,
+      participantsBySocket: new Map([[socketId, hostParticipant]]),
       playback: {
         status: "idle",
         mediaType: "video",
@@ -113,7 +119,12 @@ export class RoomManager {
     };
   }
 
-  joinRoom(code: string, socketId: string, hostToken?: string) {
+  joinRoom(
+    code: string,
+    socketId: string,
+    hostToken?: string,
+    participantToken?: string,
+  ) {
     const normalizedCode = this.normalizeCode(code);
     const room = this.rooms.get(normalizedCode);
     if (!room)
@@ -122,7 +133,7 @@ export class RoomManager {
         "That jam room does not exist or has expired.",
       );
 
-    let isHost = false;
+    let isHost = room.participantsBySocket.get(socketId)?.isHost ?? false;
     if (hostToken !== undefined) {
       if (!this.isValidHostToken(room, hostToken)) {
         throw new RoomError(
@@ -134,7 +145,47 @@ export class RoomManager {
     }
 
     if (
-      !room.participantsBySocket.has(socketId) &&
+      participantToken !== undefined &&
+      (typeof participantToken !== "string" ||
+        !/^[a-zA-Z0-9_-]{32,128}$/.test(participantToken))
+    ) {
+      throw new RoomError(
+        "INVALID_INPUT",
+        "The saved participant session is invalid.",
+      );
+    }
+    const existing = room.participantsBySocket.get(socketId);
+    const guestKey =
+      !isHost && participantToken
+        ? this.digestToken(participantToken).toString("hex")
+        : undefined;
+    if (existing && !existing.isHost && guestKey) {
+      const boundKey = [...room.guestSessions].find(
+        ([, member]) => member.id === existing.id,
+      )?.[0];
+      if (boundKey && boundKey !== guestKey)
+        throw new RoomError(
+          "INVALID_INPUT",
+          "This connection already belongs to another participant session.",
+        );
+    }
+    const participant = isHost
+      ? room.hostParticipant
+      : ((existing && !existing.isHost
+          ? existing
+          : guestKey
+            ? room.guestSessions.get(guestKey)
+            : undefined) ?? {
+          id: randomUUID(),
+          name: this.makeName("Guest"),
+          isHost: false,
+        });
+    const replacing = [...room.participantsBySocket]
+      .filter(([id, member]) => id !== socketId && member.id === participant.id)
+      .map(([id]) => id);
+    if (
+      !existing &&
+      replacing.length === 0 &&
       room.participantsBySocket.size >= MAX_ROOM_SIZE
     ) {
       throw new RoomError(
@@ -143,16 +194,33 @@ export class RoomManager {
       );
     }
 
-    const participantId = isHost ? room.hostParticipantId : randomUUID();
-    const participant: Participant = {
-      id: participantId,
-      name: isHost ? this.makeName("Host") : this.makeName("Guest"),
-      isHost,
-    };
+    for (const id of replacing) room.participantsBySocket.delete(id);
+    if (replacing.length > 0) {
+      room.sync?.readyParticipantIds.delete(participant.id);
+      room.roundTrips.delete(participant.id);
+    }
+    if (guestKey) {
+      room.guestSessions.set(guestKey, participant);
+      if (room.guestSessions.size > 256) {
+        const connected = new Set(
+          [...room.participantsBySocket.values()].map((member) => member.id),
+        );
+        for (const [key, member] of room.guestSessions) {
+          if (key !== guestKey && !connected.has(member.id)) {
+            room.guestSessions.delete(key);
+            break;
+          }
+        }
+      }
+    }
     room.participantsBySocket.set(socketId, participant);
     room.updatedAtMs = Date.now();
 
-    return { room: this.toSnapshot(room), selfParticipantId: participantId };
+    return {
+      room: this.toSnapshot(room),
+      selfParticipantId: participant.id,
+      replacedSocketIds: replacing,
+    };
   }
 
   leaveRoom(code: string, socketId: string): RoomSnapshot | undefined {
@@ -651,6 +719,7 @@ export class RoomManager {
   }
 
   private toSnapshot(room: RoomRecord): RoomSnapshot {
+    room.revision += 1;
     return {
       code: room.code,
       hostParticipantId: room.hostParticipantId,
@@ -667,6 +736,7 @@ export class RoomManager {
       musicTracks: [...room.musicTracks],
       messages: [...room.messages],
       updatedAtMs: room.updatedAtMs,
+      revision: room.revision,
     };
   }
 

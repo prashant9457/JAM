@@ -15,13 +15,17 @@ No BeatSync source code is vendored.
 3. A listener reports ready only with decoded audio, a running context, a connected
    session, and a synchronized clock. The server waits for everyone. Load failures
    offer Retry. Every preparation round has an ID to reject stale readiness reports.
-4. Ten four-timestamp probes estimate clock offset using the lowest-RTT sample,
-   excluding server processing time. Probes repeat every 30 seconds.
+4. Ten four-timestamp probes estimate clock offset, excluding server processing time.
+   A rolling 60-sample window keeps the lowest-RTT estimate so a congested refresh
+   does not suddenly move the clock. Probes repeat every 30 seconds.
 5. The shared start is at least 1.5 seconds ahead, or twice the slowest reported RTT
    plus 250 ms, whichever is longer.
-6. AudioBufferSourceNode.start() schedules on AudioContext.currentTime, accounting
-   for reported output latency (bounded to 250 ms). Late arrivals join the current
-   shared position. A two-second drift check re-anchors differences over 80 ms.
+6. AudioBufferSourceNode.start() schedules on AudioContext.currentTime. Output
+   latency reports above 100 ms are ignored as unreliable, following BeatSync's
+   conservative filtering. Late arrivals join the current shared position. Clock
+   refreshes and duplicate room updates preserve the running source. Drift checks
+   adjust playback rate by at most 0.5%; a hard re-anchor requires three consecutive
+   differences over 500 ms. Completed timelines advance the queue only once.
 
 Three decoded buffers are retained per mounted player. Track changes abort pending
 downloads and stop old nodes. Pause, mode change, unmount, and disconnection stop
@@ -31,6 +35,19 @@ sources never advance it.
 Bluetooth and inaccurate device latency reporting can still cause audible timing
 differences; sample-accurate hardware output is not guaranteed. Test with normal
 browser tabs rather than an embedded editor preview.
+
+## Connection lifecycle
+
+Room membership is created on the room page only. A random guest resume credential
+is retained in sessionStorage and hashed on the server; reconnects replace the old
+socket for that identity instead of adding another participant. Hosts similarly keep
+one identity across reconnects. Repeated joins are idempotent. Replaced sockets lose
+room authorization before disconnecting, so their delayed disconnect cannot remove
+the current participant. Separate browser sessions still count as separate guests.
+
+Snapshots carry increasing revisions, preventing delayed acknowledgements from
+resurrecting old participants or playback state. Clock/join callbacks are scoped to
+the current connection generation and cannot revive state after cleanup/disconnect.
 
 To add recordings, place files in `public/music/`, list metadata in
 `shared/music.ts`, and update `public/music/CREDITS.md` and the UI credits for any

@@ -20,6 +20,10 @@ function fakeContext(state = "running") {
     stopped: boolean;
     disconnected: boolean;
     buffer: unknown;
+    playbackRate: {
+      value: number;
+      setValueAtTime: (value: number, time: number) => void;
+    };
     connect: () => void;
     start: (when: number, offset: number) => void;
     stop: () => void;
@@ -42,6 +46,12 @@ function fakeContext(state = "running") {
         stopped: false,
         disconnected: false,
         buffer: null as unknown,
+        playbackRate: {
+          value: 1,
+          setValueAtTime(value: number) {
+            this.value = value;
+          },
+        },
         connect() {},
         start(when: number, offset: number) {
           this.startArgs = [when, offset];
@@ -88,7 +98,7 @@ test("late listeners catch up including output latency instead of restarting", (
 test("invalid and excessive latency readings remain bounded", () => {
   assert.equal(audioSchedule(timeline, 0, 9_000, 5, Number.NaN).when, 6);
   assert.equal(audioSchedule(timeline, 0, 9_000, 5, -2).when, 6);
-  assert.equal(audioSchedule(timeline, 0, 9_000, 5, 10).when, 5.75);
+  assert.equal(audioSchedule(timeline, 0, 9_000, 5, 10).when, 6);
 });
 
 test("rescheduling stops the old source without advancing the queue", () => {
@@ -104,6 +114,80 @@ test("rescheduling stops the old source without advancing the queue", () => {
   sources[1].onended?.();
   assert.equal(ends, 1);
   assert.equal(engine.audiblePosition, null);
+});
+
+test("clock refreshes and repeated snapshots do not restart the running song", () => {
+  const { engine, sources, context } = fakeContext();
+  const buffer = { duration: 180 } as AudioBuffer;
+  engine.synchronize(buffer, timeline, 500, 8_000, () => {});
+  context.currentTime = 8;
+  engine.synchronize(buffer, { ...timeline }, 530, 11_000, () => {});
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].stopped, false);
+  engine.synchronize(
+    buffer,
+    { ...timeline, startsAtMs: 20_000 },
+    530,
+    11_000,
+    () => {},
+  );
+  assert.equal(sources.length, 2);
+  assert.equal(sources[0].stopped, true);
+});
+
+test("ordinary clock drift adjusts playback gently without stopping audio", () => {
+  const { engine, sources, context } = fakeContext();
+  const buffer = { duration: 180 } as AudioBuffer;
+  engine.synchronize(buffer, timeline, 500, 8_000, () => {});
+  context.currentTime = 8;
+  engine.reconcile(buffer, timeline, 600, 11_000, () => {});
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].stopped, false);
+  assert.ok(
+    sources[0].playbackRate.value > 1 && sources[0].playbackRate.value <= 1.005,
+  );
+  context.currentTime = 9;
+  engine.reconcile(buffer, timeline, 500, 12_000, () => {});
+  assert.equal(sources[0].playbackRate.value, 1);
+  assert.equal(sources.length, 1);
+});
+
+test("one noisy large clock sample does not seek; sustained large drift can recover", () => {
+  const { engine, sources, context } = fakeContext();
+  const buffer = { duration: 180 } as AudioBuffer;
+  engine.synchronize(buffer, timeline, 500, 8_000, () => {});
+  context.currentTime = 8;
+  engine.reconcile(buffer, timeline, 2_500, 11_000, () => {});
+  assert.equal(sources.length, 1);
+  engine.reconcile(buffer, timeline, 500, 11_000, () => {});
+  assert.equal(sources.length, 1);
+  for (let index = 0; index < 3; index++)
+    engine.reconcile(buffer, timeline, 2_500, 11_000, () => {});
+  assert.equal(sources.length, 2);
+});
+
+test("changing device latency reports cannot repeatedly jump the audio playhead", () => {
+  const { engine, context } = fakeContext();
+  engine.synchronize(
+    { duration: 180 } as AudioBuffer,
+    timeline,
+    500,
+    8_000,
+    () => {},
+  );
+  context.currentTime = 8;
+  const before = engine.audiblePosition;
+  context.outputLatency = 0.8;
+  assert.equal(engine.audiblePosition, before);
+});
+
+test("a completed timeline advances the queue only once despite duplicate updates", () => {
+  const { engine } = fakeContext();
+  const buffer = { duration: 1 } as AudioBuffer;
+  let ended = 0;
+  engine.synchronize(buffer, timeline, 500, 11_000, () => ended++);
+  engine.synchronize(buffer, { ...timeline }, 510, 11_000, () => ended++);
+  assert.equal(ended, 1);
 });
 
 test("pause cancels scheduled audio and suspended contexts never start", () => {

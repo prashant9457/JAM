@@ -46,6 +46,7 @@ export type RoomSnapshot = {
   musicTracks: MusicTrack[];
   messages: ChatMessage[];
   updatedAtMs: number;
+  revision: number;
 };
 
 export type ApiErrorCode =
@@ -87,7 +88,7 @@ export type ClientToServerEvents = {
   "music:cancel-upload": (payload: { uploadId: string }) => void;
   "room:create": (ack: (result: ApiResult<CreateRoomData>) => void) => void;
   "room:join": (
-    payload: { code: string; hostToken?: string },
+    payload: { code: string; hostToken?: string; participantToken?: string },
     ack: (result: ApiResult<JoinRoomData>) => void,
   ) => void;
   "room:leave": (ack: (result: ApiResult<{ ok: true }>) => void) => void;
@@ -149,6 +150,7 @@ export type ClientToServerEvents = {
 };
 
 export type ServerToClientEvents = {
+  "room:session-replaced": () => void;
   "room:state": (room: RoomSnapshot) => void;
   "room:ended": (payload: { code: string }) => void;
 };

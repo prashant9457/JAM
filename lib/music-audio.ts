@@ -1,5 +1,6 @@
 import type { PlaybackState } from "../shared/jam.ts";
 import { expectedPosition, playbackStartDelay } from "./playback-timing.ts";
+import { driftAdjustment, trustedOutputLatency } from "./music-drift.ts";
 
 export function audioSchedule(
   playback: PlaybackState,
@@ -8,9 +9,7 @@ export function audioSchedule(
   audioNow: number,
   outputLatency: number,
 ) {
-  const latency = Number.isFinite(outputLatency)
-    ? Math.max(0, Math.min(outputLatency, 0.25))
-    : 0;
+  const latency = trustedOutputLatency(outputLatency);
   const untilAudible =
     playbackStartDelay(playback.startsAtMs, localNowMs, serverOffsetMs) / 1_000;
   const delay = Math.max(0, untilAudible - latency);
@@ -28,7 +27,17 @@ export class MusicAudioEngine {
   private source: AudioBufferSourceNode | null = null;
   private gain: GainNode;
   private buffers = new Map<string, AudioBuffer>();
-  private anchor: { when: number; offset: number } | null = null;
+  private anchor: {
+    when: number;
+    offset: number;
+    startOffset: number;
+    latency: number;
+    rate: number;
+  } | null = null;
+  private activeKey: string | null = null;
+  private activeBuffer: AudioBuffer | null = null;
+  private endedKey: string | null = null;
+  private largeDriftSamples = 0;
 
   constructor(context: AudioContext) {
     this.context = context;
@@ -73,6 +82,65 @@ export class MusicAudioEngine {
       this.source = null;
     }
     this.anchor = null;
+    this.activeKey = null;
+    this.activeBuffer = null;
+    this.largeDriftSamples = 0;
+  }
+
+  synchronize(
+    buffer: AudioBuffer,
+    playback: PlaybackState,
+    clockOffsetMs: number,
+    localNowMs: number,
+    onEnded: () => void,
+  ) {
+    const key = timelineKey(playback);
+    if (
+      this.endedKey === key ||
+      (this.source && this.activeKey === key && this.activeBuffer === buffer)
+    )
+      return;
+    this.play(buffer, playback, clockOffsetMs, localNowMs, onEnded);
+  }
+
+  reconcile(
+    buffer: AudioBuffer,
+    playback: PlaybackState,
+    clockOffsetMs: number,
+    localNowMs: number,
+    onEnded: () => void,
+  ) {
+    if (!this.source || !this.anchor || this.context.state !== "running")
+      return;
+    if (
+      playback.startsAtMs !== null &&
+      localNowMs + clockOffsetMs < playback.startsAtMs
+    )
+      return;
+    const actual = this.audiblePosition;
+    if (actual === null) return;
+    const adjustment = driftAdjustment(
+      expectedPosition(playback, localNowMs + clockOffsetMs) - actual,
+      this.largeDriftSamples,
+    );
+    this.largeDriftSamples = adjustment.largeSamples;
+    if (adjustment.restart) {
+      this.play(buffer, playback, clockOffsetMs, localNowMs, onEnded);
+      return;
+    }
+    if (
+      adjustment.rate !== this.anchor.rate &&
+      this.context.currentTime >= this.anchor.when
+    ) {
+      this.anchor.offset +=
+        (this.context.currentTime - this.anchor.when) * this.anchor.rate;
+      this.anchor.when = this.context.currentTime;
+      this.anchor.rate = adjustment.rate;
+      this.source.playbackRate.setValueAtTime(
+        adjustment.rate,
+        this.context.currentTime,
+      );
+    }
   }
 
   play(
@@ -84,15 +152,20 @@ export class MusicAudioEngine {
   ) {
     this.stop();
     if (this.context.state !== "running") return;
+    const key = timelineKey(playback);
+    const latency = trustedOutputLatency(this.context.outputLatency ?? 0);
     const schedule = audioSchedule(
       playback,
       clockOffsetMs,
       localNowMs,
       this.context.currentTime,
-      this.context.outputLatency ?? this.context.baseLatency ?? 0,
+      latency,
     );
     if (schedule.offset >= buffer.duration) {
-      onEnded();
+      if (this.endedKey !== key) {
+        this.endedKey = key;
+        onEnded();
+      }
       return;
     }
     const source = this.context.createBufferSource();
@@ -103,25 +176,30 @@ export class MusicAudioEngine {
       this.source = null;
       this.anchor = null;
       source.disconnect();
-      onEnded();
+      if (this.endedKey !== key) {
+        this.endedKey = key;
+        onEnded();
+      }
     };
     this.source = source;
-    this.anchor = schedule;
+    this.activeKey = key;
+    this.activeBuffer = buffer;
+    this.anchor = {
+      ...schedule,
+      startOffset: schedule.offset,
+      latency,
+      rate: 1,
+    };
     source.start(schedule.when, schedule.offset);
   }
 
   get audiblePosition(): number | null {
     if (!this.anchor) return null;
-    const latency = Math.max(
-      0,
-      Math.min(
-        this.context.outputLatency ?? this.context.baseLatency ?? 0,
-        0.25,
-      ),
-    );
-    return (
+    return Math.max(
+      this.anchor.startOffset,
       this.anchor.offset +
-      Math.max(0, this.context.currentTime - latency - this.anchor.when)
+        (this.context.currentTime - this.anchor.latency - this.anchor.when) *
+          this.anchor.rate,
     );
   }
 
@@ -130,4 +208,13 @@ export class MusicAudioEngine {
     this.buffers.clear();
     if (this.context.state !== "closed") await this.context.close();
   }
+}
+
+function timelineKey(playback: PlaybackState): string {
+  return JSON.stringify([
+    playback.trackId,
+    playback.status,
+    playback.positionSeconds,
+    playback.startsAtMs,
+  ]);
 }

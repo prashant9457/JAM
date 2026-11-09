@@ -5,7 +5,6 @@ import type { PlaybackState } from "@/shared/jam";
 import { getMusicTrack, type MusicTrack } from "@/shared/music";
 import { getJamServerUrl } from "@/lib/realtime/client";
 import { MusicAudioEngine } from "@/lib/music-audio";
-import { expectedPosition } from "@/lib/playback-timing";
 import { clockNow } from "@/lib/realtime/clock";
 
 type Options = {
@@ -160,7 +159,7 @@ export function useSyncedMusicPlayer({
       engine.stop();
       return;
     }
-    engine.play(buffer, playback, serverClockOffsetMs, clockNow(), () =>
+    engine.synchronize(buffer, playback, serverClockOffsetMs, clockNow(), () =>
       onEndedRef.current?.(),
     );
     // Re-anchor only for timeline changes, never for chat or participant updates.
@@ -170,25 +169,17 @@ export function useSyncedMusicPlayer({
         clockNow() + offsetRef.current < playbackRef.current.startsAtMs
       )
         return;
-      const actual = engine.audiblePosition;
-      if (actual === null) return;
-      const expected = expectedPosition(
+      engine.reconcile(
+        buffer,
         playbackRef.current,
-        clockNow() + offsetRef.current,
+        offsetRef.current,
+        clockNow(),
+        () => onEndedRef.current?.(),
       );
-      if (Math.abs(actual - expected) > 0.08) {
-        engine.play(
-          buffer,
-          playbackRef.current,
-          offsetRef.current,
-          clockNow(),
-          () => onEndedRef.current?.(),
-        );
-      }
     }, 2_000);
     return () => {
       window.clearInterval(correction);
-      engine.stop();
+      // Clock refreshes replace this timer, not the already-running audio source.
     };
     // The scalar dependencies below intentionally exclude snapshot object identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -3,6 +3,13 @@
 ## Implemented
 
 - Four locally bundled Creative Commons tracks and in-app credits.
+- Audited membership/audio lifecycle against BeatSync: stable guest resume credentials,
+  idempotent joins, replacement of lingering sockets, and revision-ordered snapshots.
+- Reproduced and fixed changing guest IDs and duplicate hosts/guests. A real socket
+  test cycles overlapping reconnects four times while keeping exactly two members.
+- Clock refreshes no longer restart audio. Drift corrections normally adjust rate
+  gently; large corrections require sustained evidence. Timing uses a rolling
+  low-RTT sample window rather than replacing the estimate with each burst.
 - Music library search, original record sleeves, now-playing view, per-device volume,
   shared queue controls, loading/error/retry states, and separate video/music playback.
 - An independent Web Audio engine and React lifecycle hook. Songs are decoded before

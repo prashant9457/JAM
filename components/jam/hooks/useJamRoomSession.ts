@@ -5,12 +5,14 @@ import { useRouter } from "next/navigation";
 import type { ApiResult, RoomSnapshot } from "@/shared/jam";
 import {
   createJamSocket,
+  getParticipantToken,
   hostTokenStorageKey,
   synchronizeClock,
   type JamSocket,
 } from "@/lib/realtime/client";
 import { uploadMusicFile } from "@/lib/realtime/music-upload";
 import type { UploadMusic } from "@/shared/music-upload";
+import { selectRoomSnapshot } from "@/lib/realtime/room-snapshot";
 
 export type ConnectionStatus =
   "connecting" | "connected" | "reconnecting" | "error";
@@ -35,41 +37,64 @@ export function useJamRoomSession(code: string) {
   const [isClockSynced, setIsClockSynced] = useState(false);
   const [roomEnded, setRoomEnded] = useState(false);
   const [redirectSeconds, setRedirectSeconds] = useState(15);
+  const acceptRoom = useCallback(
+    (nextRoom: RoomSnapshot) => {
+      setRoom((current) => selectRoomSnapshot(current, nextRoom, code));
+    },
+    [code],
+  );
 
   useEffect(() => {
     const socket = createJamSocket();
     socketRef.current = socket;
+    let disposed = false;
+    let generation = 0;
+    let clockInFlight = false;
+    let replaced = false;
 
     function joinRoom() {
+      if (disposed) return;
+      const joinedGeneration = ++generation;
       setConnectionStatus("connecting");
       setIsClockSynced(false);
       setErrorMessage("");
       const hostToken =
         window.sessionStorage.getItem(hostTokenStorageKey(code)) ?? undefined;
+      const participantToken = getParticipantToken(code);
 
       socket
         .timeout(8_000)
-        .emit("room:join", { code, hostToken }, (timeoutError, result) => {
-          if (timeoutError) {
-            setConnectionStatus("error");
-            setErrorMessage(
-              "The room server did not respond. Check that it is running and reload.",
-            );
-            return;
-          }
-          if (!result.ok) {
-            setConnectionStatus("error");
-            setErrorMessage(result.error.message);
-            return;
-          }
-          setRoom(result.data.room);
-          setSelfParticipantId(result.data.selfParticipantId);
-          setConnectionStatus("connected");
-        });
+        .emit(
+          "room:join",
+          { code, hostToken, participantToken },
+          (timeoutError, result) => {
+            if (
+              disposed ||
+              generation !== joinedGeneration ||
+              !socket.connected
+            )
+              return;
+            if (timeoutError) {
+              setConnectionStatus("error");
+              setErrorMessage(
+                "The room server did not respond. Check that it is running and reload.",
+              );
+              return;
+            }
+            if (!result.ok) {
+              setConnectionStatus("error");
+              setErrorMessage(result.error.message);
+              return;
+            }
+            acceptRoom(result.data.room);
+            setSelfParticipantId(result.data.selfParticipantId);
+            setConnectionStatus("connected");
+          },
+        );
     }
 
     function onState(nextRoom: RoomSnapshot) {
-      setRoom(nextRoom);
+      if (!disposed && !replaced) acceptRoom(nextRoom);
     }
 
     function onRoomEnded(payload: { code: string }) {
@@ -77,30 +102,53 @@ export function useJamRoomSession(code: string) {
     }
 
     function onConnectError() {
+      if (disposed || replaced) return;
       setConnectionStatus("reconnecting");
       setIsClockSynced(false);
     }
 
     function onDisconnect() {
-      setConnectionStatus("reconnecting");
+      if (disposed) return;
+      generation++;
+      clockInFlight = false;
+      setConnectionStatus(replaced ? "error" : "reconnecting");
       setIsClockSynced(false);
     }
 
+    function onSessionReplaced() {
+      replaced = true;
+      setSelfParticipantId(null);
+      setIsClockSynced(false);
+      setConnectionStatus("error");
+      setErrorMessage(
+        "This session was opened in another tab. Reload to join here again.",
+      );
+    }
+
     function updateClockOffset() {
+      if (disposed || replaced || !socket.connected || clockInFlight) return;
+      clockInFlight = true;
+      const clockGeneration = generation;
       void synchronizeClock(socket)
         .then(({ offsetMs, roundTripMs }) => {
+          if (disposed || generation !== clockGeneration || !socket.connected)
+            return;
           setServerClockOffsetMs(offsetMs);
           setClockRoundTripMs(roundTripMs);
           setIsClockSynced(true);
         })
         .catch(() => {
           // A transient clock-sync failure should not prevent joining the room.
+        })
+        .finally(() => {
+          if (generation === clockGeneration) clockInFlight = false;
         });
     }
 
     socket.on("connect", joinRoom);
     socket.on("room:state", onState);
     socket.on("room:ended", onRoomEnded);
+    socket.on("room:session-replaced", onSessionReplaced);
     socket.on("connect_error", onConnectError);
     socket.on("disconnect", onDisconnect);
     socket.on("connect", updateClockOffset);
@@ -108,9 +156,12 @@ export function useJamRoomSession(code: string) {
     const clockSyncInterval = window.setInterval(updateClockOffset, 30_000);
 
     return () => {
+      disposed = true;
+      generation++;
       socket.off("connect", joinRoom);
       socket.off("room:state", onState);
       socket.off("room:ended", onRoomEnded);
+      socket.off("room:session-replaced", onSessionReplaced);
       socket.off("connect_error", onConnectError);
       socket.off("disconnect", onDisconnect);
       socket.off("connect", updateClockOffset);
@@ -118,7 +169,7 @@ export function useJamRoomSession(code: string) {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [code]);
+  }, [code, acceptRoom]);
 
   useEffect(() => {
     if (!roomEnded) return;
@@ -134,26 +185,33 @@ export function useJamRoomSession(code: string) {
     return () => window.clearInterval(timer);
   }, [roomEnded, router]);
 
-  const sendControl = useCallback((request: JamControlRequest) => {
-    const socket = socketRef.current;
-    if (!socket?.connected) {
-      setErrorMessage("You are not connected to the room server.");
-      return;
-    }
+  const sendControl = useCallback(
+    (request: JamControlRequest) => {
+      const socket = socketRef.current;
+      if (!socket?.connected) {
+        setErrorMessage("You are not connected to the room server.");
+        return;
+      }
 
-    request(socket, (timeoutError, result) => {
-      if (timeoutError) {
-        setErrorMessage("The server did not respond to that control request.");
-        return;
-      }
-      if (!result.ok) {
-        setErrorMessage(result.error.message);
-        return;
-      }
-      setErrorMessage("");
-      setRoom(result.data);
-    });
-  }, []);
+      const connectionId = socket.id;
+      request(socket, (timeoutError, result) => {
+        if (socketRef.current !== socket || socket.id !== connectionId) return;
+        if (timeoutError) {
+          setErrorMessage(
+            "The server did not respond to that control request.",
+          );
+          return;
+        }
+        if (!result.ok) {
+          setErrorMessage(result.error.message);
+          return;
+        }
+        setErrorMessage("");
+        acceptRoom(result.data);
+      });
+    },
+    [acceptRoom],
+  );
 
   const sendChatMessage = useCallback(
     async (text: string): Promise<boolean> => {
@@ -164,9 +222,14 @@ export function useJamRoomSession(code: string) {
       }
 
       return new Promise((resolve) => {
+        const connectionId = socket.id;
         socket
           .timeout(8_000)
           .emit("chat:send", { text }, (timeoutError, result) => {
+            if (socketRef.current !== socket || socket.id !== connectionId) {
+              resolve(false);
+              return;
+            }
             if (timeoutError) {
               setErrorMessage(
                 "The chat server did not respond. Try sending again.",
@@ -180,12 +243,12 @@ export function useJamRoomSession(code: string) {
               return;
             }
             setErrorMessage("");
-            setRoom(result.data.room);
+            acceptRoom(result.data.room);
             resolve(true);
           });
       });
     },
-    [],
+    [acceptRoom],
   );
 
   const syncId = room?.sync?.id;
@@ -195,9 +258,13 @@ export function useJamRoomSession(code: string) {
       if (!socket?.connected)
         throw new Error("Reconnect to the room before uploading.");
       const nextRoom = await uploadMusicFile(socket, file, onProgress, signal);
-      setRoom(nextRoom);
+      if (socketRef.current !== socket || !socket.connected)
+        throw new Error(
+          "The room connection changed during the upload. Rejoin to see its status.",
+        );
+      acceptRoom(nextRoom);
     },
-    [],
+    [acceptRoom],
   );
   const syncTrackId = room?.sync?.trackId;
   const reportPlaybackReady = useCallback(

@@ -29,12 +29,24 @@ export function registerRoomHandlers(
   socket.on("room:join", (payload, ack) => {
     if (!allowEvent(socket, eventTimes, ack)) return;
     try {
-      leaveCurrentRoom(socket, services);
       const joined = rooms.joinRoom(
         payload?.code ?? "",
         socket.id,
         payload?.hostToken,
+        payload?.participantToken,
       );
+      if (socket.data.roomCode && socket.data.roomCode !== joined.room.code)
+        leaveCurrentRoom(socket, services);
+      for (const previousId of joined.replacedSocketIds) {
+        const previous = io.sockets.sockets.get(previousId);
+        if (!previous) continue;
+        previous.leave(joined.room.code);
+        previous.data.roomCode = undefined;
+        previous.data.participantId = undefined;
+        previous.data.isHost = false;
+        previous.emit("room:session-replaced");
+        previous.disconnect(true);
+      }
       if (joined.room.hostParticipantId === joined.selfParticipantId) {
         const pendingEnd = pendingHostEnds.get(joined.room.code);
         if (pendingEnd) clearTimeout(pendingEnd);

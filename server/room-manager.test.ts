@@ -3,6 +3,72 @@ import test from "node:test";
 import { RoomManager } from "./room-manager.ts";
 import { DEFAULT_MUSIC_ID } from "../shared/music.ts";
 
+test("joining twice on the same socket preserves one participant and identity", () => {
+  const rooms = new RoomManager();
+  const created = rooms.createRoom("host");
+  const first = rooms.joinRoom(created.room.code, "guest");
+  const second = rooms.joinRoom(created.room.code, "guest");
+  assert.equal(second.selfParticipantId, first.selfParticipantId);
+  assert.equal(second.room.participants.length, 2);
+  assert.deepEqual(second.room.participants, first.room.participants);
+});
+
+test("overlapping host reconnects replace the old socket instead of adding a host", () => {
+  const rooms = new RoomManager();
+  const created = rooms.createRoom("old-host");
+  const resumed = rooms.joinRoom(
+    created.room.code,
+    "new-host",
+    created.hostToken,
+  );
+  assert.equal(resumed.room.participants.length, 1);
+  assert.equal(resumed.selfParticipantId, created.selfParticipantId);
+  assert.equal(
+    rooms.leaveRoom(created.room.code, "old-host")?.participants.length,
+    1,
+  );
+});
+
+test("a guest resume credential replaces a lingering connection without inventing a listener", () => {
+  const rooms = new RoomManager();
+  const created = rooms.createRoom("host");
+  const token = "guest-session-secret-with-at-least-32-characters";
+  const first = rooms.joinRoom(
+    created.room.code,
+    "old-guest",
+    undefined,
+    token,
+  );
+  const second = rooms.joinRoom(
+    created.room.code,
+    "new-guest",
+    undefined,
+    token,
+  );
+  assert.equal(second.selfParticipantId, first.selfParticipantId);
+  assert.equal(second.room.participants.length, 2);
+});
+
+test("repeated joins cannot rebind a connection to unlimited participant credentials", () => {
+  const rooms = new RoomManager();
+  const created = rooms.createRoom("host");
+  const token = "guest-session-secret-with-at-least-32-characters";
+  rooms.joinRoom(created.room.code, "guest", undefined, token);
+  assert.throws(
+    () =>
+      rooms.joinRoom(
+        created.room.code,
+        "guest",
+        undefined,
+        "another-guest-session-secret-with-32-characters",
+      ),
+    /already belongs/,
+  );
+  const host = rooms.joinRoom(created.room.code, "host");
+  assert.equal(host.selfParticipantId, created.selfParticipantId);
+  assert.equal(host.room.participants.length, 2);
+});
+
 function createPair() {
   const rooms = new RoomManager();
   const created = rooms.createRoom("host");

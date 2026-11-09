@@ -6,7 +6,7 @@ import type {
   ClientToServerEvents,
   ServerToClientEvents,
 } from "@/shared/jam";
-import { clockMeasurement, clockNow } from "./clock";
+import { clockMeasurement, clockNow, ClockSampleWindow } from "./clock";
 
 export type JamSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -31,6 +31,23 @@ export function createJamSocket(): JamSocket {
 
 export function hostTokenStorageKey(roomCode: string): string {
   return `jam:host:${roomCode}`;
+}
+
+export function participantTokenStorageKey(roomCode: string): string {
+  return `jam:participant:${roomCode}`;
+}
+
+export function getParticipantToken(roomCode: string): string {
+  const key = participantTokenStorageKey(roomCode);
+  let token = window.sessionStorage.getItem(key);
+  if (!token) {
+    token = Array.from(
+      window.crypto.getRandomValues(new Uint8Array(32)),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    window.sessionStorage.setItem(key, token);
+  }
+  return token;
 }
 
 export function waitForSocketConnection(socket: JamSocket): Promise<void> {
@@ -69,6 +86,10 @@ export function waitForSocketConnection(socket: JamSocket): Promise<void> {
 }
 
 export type ClockSyncResult = { offsetMs: number; roundTripMs: number };
+const clockWindows = new WeakMap<
+  JamSocket,
+  { connectionId: string | undefined; window: ClockSampleWindow }
+>();
 
 function measureClockOffset(socket: JamSocket): Promise<ClockSyncResult> {
   if (!socket.connected)
@@ -115,6 +136,7 @@ function measureClockOffset(socket: JamSocket): Promise<ClockSyncResult> {
 export async function synchronizeClock(
   socket: JamSocket,
 ): Promise<ClockSyncResult> {
+  const connectionId = socket.id;
   const measurements = await Promise.allSettled(
     Array.from({ length: 10 }, () => measureClockOffset(socket)),
   );
@@ -126,7 +148,14 @@ export async function synchronizeClock(
     .map((result) => result.value);
   if (successful.length === 0)
     throw new Error("Could not synchronize with the room clock.");
-  return successful.reduce((best, sample) =>
-    sample.roundTripMs < best.roundTripMs ? sample : best,
-  );
+  if (!socket.connected || socket.id !== connectionId)
+    throw new Error(
+      "The room connection changed during clock synchronization.",
+    );
+  let samples = clockWindows.get(socket);
+  if (!samples || samples.connectionId !== connectionId) {
+    samples = { connectionId, window: new ClockSampleWindow() };
+    clockWindows.set(socket, samples);
+  }
+  return samples.window.add(successful);
 }
