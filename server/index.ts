@@ -2,6 +2,8 @@ import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createJamSocketServer } from "./socket-server.ts";
+import { MusicUploadStore } from "./music-upload-store.ts";
+import { createMusicUploadHandler } from "./music-upload-http.ts";
 
 // Load optional local settings without requiring a dotenv runtime dependency.
 const envFile = fileURLToPath(new URL("../.env", import.meta.url));
@@ -10,7 +12,10 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 const host = process.env.JAM_SERVER_HOST ?? "0.0.0.0";
 // Cloud hosts provide PORT; keep JAM_SERVER_PORT as the convenient local override.
 const port = Number(process.env.PORT ?? process.env.JAM_SERVER_PORT ?? 4_000);
-const origins = (process.env.JAM_ALLOWED_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:3000")
+const origins = (
+  process.env.JAM_ALLOWED_ORIGINS ??
+  "http://localhost:3000,http://127.0.0.1:3000"
+)
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
@@ -19,17 +24,24 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) {
   throw new Error("PORT or JAM_SERVER_PORT must be a valid TCP port.");
 }
 
-const httpServer = createServer((request, response) => {
+const uploads = new MusicUploadStore();
+const handleUpload = createMusicUploadHandler(uploads, origins);
+const httpServer = createServer(async (request, response) => {
+  if (await handleUpload(request, response)) return;
   if (request.url === "/health") {
-    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+    });
     response.end(JSON.stringify({ status: "ok", service: "jam-realtime" }));
     return;
   }
-  response.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+  response.writeHead(404, {
+    "content-type": "application/json; charset=utf-8",
+  });
   response.end(JSON.stringify({ error: "Not found" }));
 });
 
-const io = createJamSocketServer(origins);
+const io = createJamSocketServer(origins, uploads);
 io.attach(httpServer);
 
 httpServer.listen(port, host, () => {

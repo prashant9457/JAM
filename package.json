@@ -9,7 +9,7 @@
     "start": "next start",
     "start:server": "node --experimental-strip-types server/index.ts",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test lib/music-audio.test.ts lib/playback-timing.test.ts lib/realtime/clock.test.ts server/room-manager.test.ts server/music-integration.test.ts"
+    "test": "node --experimental-strip-types --test lib/music-audio.test.ts lib/playback-timing.test.ts lib/realtime/clock.test.ts server/room-manager.test.ts server/music-integration.test.ts server/music-upload-store.test.ts"
   },
   "dependencies": {
     "lucide-react": "^1.66.0",

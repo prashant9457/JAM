@@ -12,7 +12,7 @@ import RoomConnectionNotice from "./RoomConnectionNotice";
 import TrackWorkspace from "./TrackWorkspace";
 import { useJamRoomSession } from "./hooks/useJamRoomSession";
 import { useJamRoomControls } from "./hooks/useJamRoomControls";
-import { getMusicTrack } from "@/shared/music";
+import { getMusicTrack, MUSIC_TRACKS } from "@/shared/music";
 
 type JamRoomProps = {
   code: string;
@@ -75,6 +75,8 @@ export default function JamRoom({ code }: JamRoomProps) {
         </div>
 
         <TrackWorkspace
+          musicTracks={session.room?.musicTracks ?? MUSIC_TRACKS}
+          onUploadMusic={session.uploadMusic}
           playback={
             playback ?? {
               status: "idle",
@@ -147,7 +149,8 @@ export default function JamRoom({ code }: JamRoomProps) {
       <PlayerBar
         title={
           playback?.mediaType === "music"
-            ? (getMusicTrack(playback.trackId)?.title ?? "Shared music")
+            ? (getMusicTrack(playback.trackId, session.room?.musicTracks)
+                ?.title ?? "Shared music")
             : "Shared video"
         }
         mediaType={playback?.mediaType ?? "video"}

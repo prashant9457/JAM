@@ -11,11 +11,17 @@ import { clockMeasurement, clockNow } from "./clock";
 export type JamSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
 /** Create a browser socket on demand so server rendering never opens a connection. */
-export function createJamSocket(): JamSocket {
+export function getJamServerUrl(): string {
   // Reuse the page hostname so a phone on the same LAN reaches the host computer.
   const defaultUrl = `${window.location.protocol}//${window.location.hostname}:4000`;
-  const url = process.env.NEXT_PUBLIC_JAM_SERVER_URL || defaultUrl;
-  return io(url, {
+  return (process.env.NEXT_PUBLIC_JAM_SERVER_URL || defaultUrl).replace(
+    /\/$/,
+    "",
+  );
+}
+
+export function createJamSocket(): JamSocket {
+  return io(getJamServerUrl(), {
     autoConnect: false,
     reconnection: true,
     reconnectionAttempts: 8,

@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { ArrowDown, ArrowUp, GripVertical, Play, Trash2 } from "lucide-react";
 import type { QueueItem } from "@/shared/jam";
-import { getMusicTrack } from "@/shared/music";
+import { getMusicTrack, MUSIC_TRACKS, type MusicTrack } from "@/shared/music";
 import MusicCover from "./MusicCover";
 
 type QueuePanelProps = {
+  musicTracks?: readonly MusicTrack[];
   queue: QueueItem[];
   isHost: boolean;
   onMove: (itemId: string, toIndex: number) => void;
@@ -15,6 +16,7 @@ type QueuePanelProps = {
 };
 
 export default function QueuePanel({
+  musicTracks = MUSIC_TRACKS,
   queue,
   isHost,
   onMove,
@@ -61,8 +63,9 @@ export default function QueuePanel({
               <span className="w-5 shrink-0 text-center text-xs tabular-nums text-neutral-500">
                 {index + 1}
               </span>
-              {item.mediaType === "music" && getMusicTrack(item.trackId) ? (
-                <MusicCover track={getMusicTrack(item.trackId)!} />
+              {item.mediaType === "music" &&
+              getMusicTrack(item.trackId, musicTracks) ? (
+                <MusicCover track={getMusicTrack(item.trackId, musicTracks)!} />
               ) : (
                 <div
                   aria-hidden="true"
@@ -75,12 +78,13 @@ export default function QueuePanel({
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-neutral-200">
                   {item.mediaType === "music"
-                    ? (getMusicTrack(item.trackId)?.title ?? "Music")
+                    ? (getMusicTrack(item.trackId, musicTracks)?.title ??
+                      "Music")
                     : "YouTube video"}
                 </p>
                 <p className="truncate text-[11px] text-neutral-500">
                   {item.mediaType === "music"
-                    ? getMusicTrack(item.trackId)?.artist
+                    ? getMusicTrack(item.trackId, musicTracks)?.artist
                     : item.trackId}
                 </p>
               </div>

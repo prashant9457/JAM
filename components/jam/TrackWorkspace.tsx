@@ -8,8 +8,12 @@ import SpotlightCard from "@/components/ui/SpotlightCard";
 import QueuePanel from "./QueuePanel";
 import YouTubeVideo from "./YouTubeVideo";
 import MusicWorkspace from "./MusicWorkspace";
+import type { MusicTrack } from "@/shared/music";
+import type { UploadMusic } from "@/shared/music-upload";
 
 type TrackWorkspaceProps = {
+  musicTracks: readonly MusicTrack[];
+  onUploadMusic: UploadMusic;
   playback: PlaybackState;
   serverClockOffsetMs: number;
   onDurationChange: (durationSeconds: number) => void;
@@ -40,6 +44,8 @@ type TrackWorkspaceProps = {
 };
 
 export default function TrackWorkspace({
+  musicTracks,
+  onUploadMusic,
   playback,
   serverClockOffsetMs,
   onDurationChange,
@@ -165,6 +171,8 @@ export default function TrackWorkspace({
         </header>
         {playback.mediaType === "music" ? (
           <MusicWorkspace
+            musicTracks={musicTracks}
+            onUploadMusic={onUploadMusic}
             playback={playback}
             serverClockOffsetMs={serverClockOffsetMs}
             clockRoundTripMs={clockRoundTripMs}
@@ -205,6 +213,7 @@ export default function TrackWorkspace({
               />
             </div>
             <QueuePanel
+              musicTracks={musicTracks}
               queue={queue}
               isHost={isHost}
               onMove={onMoveQueueItem}

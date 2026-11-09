@@ -4,14 +4,30 @@ import { isAllowedOrigin } from "./socket/guards.ts";
 import { registerChatHandlers } from "./socket/chat-handlers.ts";
 import { registerPlaybackHandlers } from "./socket/playback-handlers.ts";
 import { registerRoomHandlers } from "./socket/room-handlers.ts";
-import type { ClientToServerEvents, InterServerEvents, ServerToClientEvents, SocketData } from "../shared/jam.ts";
+import { registerMusicUploadHandlers } from "./socket/music-upload-handlers.ts";
+import { MusicUploadStore } from "./music-upload-store.ts";
+import type {
+  ClientToServerEvents,
+  InterServerEvents,
+  ServerToClientEvents,
+  SocketData,
+} from "../shared/jam.ts";
 import type { JamServer, SocketServices } from "./socket/types.ts";
 
 /** Builds the Socket.IO server and wires its room, chat, and playback handlers. */
-export function createJamSocketServer(origins: string[]) {
-  const io: JamServer = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>({
+export function createJamSocketServer(
+  origins: string[],
+  uploads = new MusicUploadStore(),
+) {
+  const io: JamServer = new Server<
+    ClientToServerEvents,
+    ServerToClientEvents,
+    InterServerEvents,
+    SocketData
+  >({
     cors: {
-      origin: (origin, callback) => callback(null, !origin || isAllowedOrigin(origin, origins)),
+      origin: (origin, callback) =>
+        callback(null, !origin || isAllowedOrigin(origin, origins)),
       methods: ["GET", "POST"],
     },
     maxHttpBufferSize: 1_000_000,
@@ -22,6 +38,7 @@ export function createJamSocketServer(origins: string[]) {
   const services: SocketServices = {
     io,
     rooms: new RoomManager(),
+    uploads,
     eventTimes: new Map(),
     pendingHostEnds: new Map(),
   };
@@ -36,13 +53,17 @@ export function createJamSocketServer(origins: string[]) {
     next();
   });
 
-  const cleanupTimer = setInterval(() => services.rooms.removeExpiredRooms(), 60_000);
+  const cleanupTimer = setInterval(() => {
+    services.rooms.removeExpiredRooms();
+    uploads.prune((code) => services.rooms.hasRoom(code));
+  }, 60_000);
   cleanupTimer.unref();
 
   io.on("connection", (socket) => {
     registerRoomHandlers(socket, services);
     registerChatHandlers(socket, services);
     registerPlaybackHandlers(socket, services);
+    registerMusicUploadHandlers(socket, services);
   });
 
   return io;

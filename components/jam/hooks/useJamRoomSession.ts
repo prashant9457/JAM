@@ -9,6 +9,8 @@ import {
   synchronizeClock,
   type JamSocket,
 } from "@/lib/realtime/client";
+import { uploadMusicFile } from "@/lib/realtime/music-upload";
+import type { UploadMusic } from "@/shared/music-upload";
 
 export type ConnectionStatus =
   "connecting" | "connected" | "reconnecting" | "error";
@@ -187,6 +189,16 @@ export function useJamRoomSession(code: string) {
   );
 
   const syncId = room?.sync?.id;
+  const uploadMusic: UploadMusic = useCallback(
+    async (file, onProgress, signal) => {
+      const socket = socketRef.current;
+      if (!socket?.connected)
+        throw new Error("Reconnect to the room before uploading.");
+      const nextRoom = await uploadMusicFile(socket, file, onProgress, signal);
+      setRoom(nextRoom);
+    },
+    [],
+  );
   const syncTrackId = room?.sync?.trackId;
   const reportPlaybackReady = useCallback(
     (trackId: string) => {
@@ -233,6 +245,7 @@ export function useJamRoomSession(code: string) {
     roomEnded,
     redirectSeconds,
     sendControl,
+    uploadMusic,
     reportPlaybackReady,
     sendChatMessage,
     leaveRoom,

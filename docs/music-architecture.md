@@ -34,4 +34,29 @@ browser tabs rather than an embedded editor preview.
 
 To add recordings, place files in `public/music/`, list metadata in
 `shared/music.ts`, and update `public/music/CREDITS.md` and the UI credits for any
-additional artists/licenses. The server validates music IDs against the catalog.
+additional artists/licenses. The server validates music IDs against the room catalog.
+
+## Room MP3 uploads
+
+The host's Upload MP3 button follows the prepare/transfer/publish structure used by
+BeatSync. BeatSync transfers directly to R2; Jam uses bounded temporary storage in
+the realtime server so the existing Render deployment needs no storage credentials.
+
+- `music:prepare-upload` validates host membership, filename, size, and reserved
+  storage capacity. It returns a short-lived, one-use bearer upload URL.
+- `PUT /music/uploads/:id` accepts the raw MP3 (20 MB maximum). Actual byte count
+  and recognizable MPEG Layer III frames are checked. Unfinished files are not
+  downloadable or included in the room snapshot.
+- `music:complete-upload` verifies ownership, publishes metadata, appends to the
+  queue, and broadcasts the updated room catalog. Repeating completion is idempotent.
+- `GET /music/uploads/:id` serves published audio with CORS for allowed site origins.
+  Listeners fetch it from the realtime origin and use the same decoded-buffer sync
+  pipeline as bundled songs. The unpredictable URL is an audio access capability.
+- Cancellation and five-minute grant expiry release reserved capacity. Closing or
+  expiring rooms releases their bytes on the next cleanup tick. Restarts clear all
+  uploads. Limits are 10 tracks / 60 MB per room and 128 MB globally, including pending
+  reservations, to keep memory bounded on a small Render instance.
+
+Storage, HTTP transfer, socket authorization, browser transfer, and the upload UI are
+separate modules. User-uploaded recordings are never added to Git or attributed to
+the bundled tracks' artist.

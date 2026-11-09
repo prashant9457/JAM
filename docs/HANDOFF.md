@@ -21,6 +21,9 @@
 - Listen in two normal browser tabs/devices and confirm audible alignment, pause/resume,
   next queued track, switching back to video, and a guest joining mid-song.
 - Check narrow mobile layout and audio interruption/recovery on iOS/Android.
+- Test the host's Upload MP3 picker, progress/cancel controls, and a real uploaded
+  recording in deployed browsers. Automated upload coverage includes byte transfer,
+  cross-origin headers, ownership, room broadcasts, late joins, and shared starts.
 - Bluetooth and inaccurate hardware latency reports can still produce audible offsets.
 - Live browser/audio verification has not been completed by the agent. Automated timing
   tests use a fake AudioContext; they cannot establish real speaker synchronization.
@@ -34,3 +37,11 @@ separate UI concerns. `docs/music-architecture.md`: protocol and design notes.
 
 Restart both the Next.js app and realtime server after updating; the server protocol
 and room state changed. Production Next.js builds and tests are run before committing.
+
+## Upload implementation
+
+Upload MP3 is host-only, adds a recording to the room catalog and shared queue, and
+uses a short-lived grant, HTTP transfer, then Socket.IO publish. Runtime bytes stay
+in bounded server memory and never enter Git. Restarting the realtime server clears
+them. See `docs/music-architecture.md` for limits and the differences from BeatSync's
+R2 storage. Deploy the updated realtime server on Render as well as the frontend.

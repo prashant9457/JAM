@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { io as connect, type Socket } from "socket.io-client";
 import { createJamSocketServer } from "./socket-server.ts";
 import { DEFAULT_MUSIC_ID } from "../shared/music.ts";
+import { MusicUploadStore } from "./music-upload-store.ts";
+import { createMusicUploadHandler } from "./music-upload-http.ts";
+import type { MusicUploadGrant } from "../shared/music-upload.ts";
 import type {
   ApiResult,
   CreateRoomData,
@@ -43,8 +47,13 @@ test(
   "two real clients coordinate music readiness, shared starts, pause, and queue advancement",
   { timeout: 15_000 },
   async (t) => {
-    const http = createServer();
-    const server = createJamSocketServer([]);
+    const uploads = new MusicUploadStore();
+    const handleUpload = createMusicUploadHandler(uploads, []);
+    const http = createServer(async (request, response) => {
+      if (!(await handleUpload(request, response)))
+        response.writeHead(404).end();
+    });
+    const server = createJamSocketServer([], uploads);
     server.attach(http);
     await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
     const address = http.address();
@@ -150,5 +159,133 @@ test(
     assert.equal(next.playback.trackId, "music-dream-culture");
     assert.equal(next.playback.mediaType, "music");
     assert.equal(next.sync?.readyParticipantIds.length, 0);
+
+    const guestUpload = await guest
+      .timeout(3_000)
+      .emitWithAck("music:prepare-upload", { name: "guest.mp3", size: 8 });
+    assert.equal(guestUpload.ok, false);
+    if (!guestUpload.ok) assert.equal(guestUpload.error.code, "HOST_ONLY");
+
+    const bytes = readFileSync(
+      new URL("../public/music/carefree.mp3", import.meta.url),
+    );
+    const grant = data<MusicUploadGrant>(
+      await host.timeout(3_000).emitWithAck("music:prepare-upload", {
+        name: "My song.mp3",
+        size: bytes.length,
+      }),
+    );
+    const uploadUrl = `${url}${grant.uploadPath}`;
+    const origin = "http://localhost:3000";
+    assert.equal((await fetch(uploadUrl)).status, 404);
+    const preflight = await fetch(uploadUrl, {
+      method: "OPTIONS",
+      headers: { Origin: origin },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), origin);
+    assert.equal(
+      (
+        await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { Authorization: "Bearer invalid" },
+          body: bytes,
+        })
+      ).status,
+      400,
+    );
+    const transfer = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${grant.uploadToken}`,
+        "Content-Type": "audio/mpeg",
+        Origin: origin,
+      },
+      body: bytes,
+    });
+    assert.equal(transfer.status, 200, await transfer.text());
+    assert.equal(
+      (await fetch(uploadUrl)).status,
+      404,
+      "unpublished audio must not be exposed",
+    );
+    const wrongOwner = await guest
+      .timeout(3_000)
+      .emitWithAck("music:complete-upload", { uploadId: grant.uploadId });
+    assert.equal(wrongOwner.ok, false);
+
+    const guestLibrary = waitForRoom(guest, (room) =>
+      room.musicTracks.some((track) => track.isUpload),
+    );
+    const published = data<RoomSnapshot>(
+      await host
+        .timeout(3_000)
+        .emitWithAck("music:complete-upload", { uploadId: grant.uploadId }),
+    );
+    const uploaded = published.musicTracks.find((track) => track.isUpload)!;
+    assert.equal(uploaded.title, "My song");
+    assert.equal(published.queue[0].trackId, uploaded.id);
+    const repeated = data<RoomSnapshot>(
+      await host
+        .timeout(3_000)
+        .emitWithAck("music:complete-upload", { uploadId: grant.uploadId }),
+    );
+    assert.equal(
+      repeated.queue.length,
+      published.queue.length,
+      "repeating completion must not duplicate a song",
+    );
+    assert.equal(
+      published.playback.trackId,
+      "music-dream-culture",
+      "uploading must not interrupt the current track",
+    );
+    assert.equal(
+      (await guestLibrary).musicTracks.find((track) => track.id === uploaded.id)
+        ?.src,
+      uploaded.src,
+    );
+    const download = await fetch(`${url}${uploaded.src}`, {
+      headers: { Origin: origin },
+    });
+    assert.equal(download.headers.get("content-type"), "audio/mpeg");
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()), bytes);
+    assert.equal(
+      (
+        await fetch(`${url}${uploaded.src}`, {
+          headers: { Origin: "https://untrusted.example" },
+        })
+      ).status,
+      403,
+    );
+
+    const uploadedPlayback = data<RoomSnapshot>(
+      await host
+        .timeout(3_000)
+        .emitWithAck("music:play", { trackId: uploaded.id }),
+    );
+    assert.equal(uploadedPlayback.sync?.trackId, uploaded.id);
+    const uploadedStart = waitForRoom(
+      guest,
+      (room) =>
+        room.playback.status === "playing" &&
+        room.playback.trackId === uploaded.id,
+    );
+    for (const client of [host, guest])
+      client.emit("playback:ready", {
+        trackId: uploaded.id,
+        syncId: uploadedPlayback.sync!.id,
+      });
+    assert.equal((await uploadedStart).sync, null);
+
+    const lateClient = await newClient();
+    const lateRoom = data<JoinRoomData>(
+      await lateClient
+        .timeout(3_000)
+        .emitWithAck("room:join", { code: created.room.code }),
+    );
+    assert.ok(
+      lateRoom.room.musicTracks.some((track) => track.id === uploaded.id),
+    );
   },
 );

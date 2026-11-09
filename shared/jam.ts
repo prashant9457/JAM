@@ -1,3 +1,6 @@
+import type { MusicTrack } from "./music.ts";
+import type { MusicUploadGrant } from "./music-upload.ts";
+
 /** A connected member currently present in a room. */
 export type Participant = {
   id: string;
@@ -40,6 +43,7 @@ export type RoomSnapshot = {
   /** Present while clients enable and prepare their player before a shared start. */
   sync: { id: string; trackId: string; readyParticipantIds: string[] } | null;
   queue: QueueItem[];
+  musicTracks: MusicTrack[];
   messages: ChatMessage[];
   updatedAtMs: number;
 };
@@ -72,6 +76,15 @@ export type JoinRoomData = {
 };
 
 export type ClientToServerEvents = {
+  "music:prepare-upload": (
+    payload: { name: string; size: number },
+    ack: (result: ApiResult<MusicUploadGrant>) => void,
+  ) => void;
+  "music:complete-upload": (
+    payload: { uploadId: string },
+    ack: (result: ApiResult<RoomSnapshot>) => void,
+  ) => void;
+  "music:cancel-upload": (payload: { uploadId: string }) => void;
   "room:create": (ack: (result: ApiResult<CreateRoomData>) => void) => void;
   "room:join": (
     payload: { code: string; hostToken?: string },

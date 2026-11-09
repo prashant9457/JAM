@@ -2,15 +2,19 @@
 
 import { useState } from "react";
 import { Music2, Search } from "lucide-react";
-import { MUSIC_TRACKS, getMusicTrack } from "@/shared/music";
+import { getMusicTrack, type MusicTrack } from "@/shared/music";
+import type { UploadMusic } from "@/shared/music-upload";
 import type { PlaybackState, QueueItem } from "@/shared/jam";
 import { useSyncedMusicPlayer } from "./hooks/useSyncedMusicPlayer";
 import MusicCredits from "./MusicCredits";
 import MusicTrackList from "./MusicTrackList";
 import MusicNowPlaying from "./MusicNowPlaying";
 import QueuePanel from "./QueuePanel";
+import MusicUploadButton from "./MusicUploadButton";
 
 type Props = {
+  musicTracks: readonly MusicTrack[];
+  onUploadMusic: UploadMusic;
   playback: PlaybackState;
   serverClockOffsetMs: number;
   clockRoundTripMs: number | null;
@@ -34,8 +38,8 @@ type Props = {
 export default function MusicWorkspace(props: Props) {
   const [query, setQuery] = useState("");
   const player = useSyncedMusicPlayer(props);
-  const selected = getMusicTrack(props.playback.trackId);
-  const tracks = MUSIC_TRACKS.filter((track) =>
+  const selected = getMusicTrack(props.playback.trackId, props.musicTracks);
+  const tracks = props.musicTracks.filter((track) =>
     `${track.title} ${track.artist} ${track.mood}`
       .toLowerCase()
       .includes(query.toLowerCase()),
@@ -55,6 +59,10 @@ export default function MusicWorkspace(props: Props) {
           <p className="mt-2 max-w-md text-sm leading-6 text-neutral-400">
             Pick a track, settle in, and share the same moment.
           </p>
+          <MusicUploadButton
+            disabled={!props.isHost}
+            onUpload={props.onUploadMusic}
+          />
           <label className="mt-5 flex items-center gap-3 rounded-md border border-neutral-800 bg-neutral-950/50 px-3 py-2.5 text-neutral-500 focus-within:border-neutral-500">
             <Search size={16} aria-hidden="true" />
             <span className="sr-only">Search music</span>
@@ -70,7 +78,7 @@ export default function MusicWorkspace(props: Props) {
             <h3 className="font-medium text-neutral-300">
               Made for your next jam
             </h3>
-            <span>{MUSIC_TRACKS.length} tracks</span>
+            <span>{props.musicTracks.length} tracks</span>
           </div>
           <MusicTrackList
             tracks={tracks}
@@ -94,6 +102,7 @@ export default function MusicWorkspace(props: Props) {
           </p>
           <div className="mt-7 max-h-64 min-h-24 overflow-y-auto border-t border-neutral-800 pt-3">
             <QueuePanel
+              musicTracks={props.musicTracks}
               queue={props.queue}
               isHost={props.isHost}
               onMove={props.onMoveQueueItem}

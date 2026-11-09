@@ -6,6 +6,7 @@ export type MusicTrack = {
   color: string;
   src: string;
   sourceUrl: string;
+  isUpload?: boolean;
 };
 
 /** Local audio, served identically to every listener. See public/music/CREDITS.md. */
@@ -55,6 +56,7 @@ export const MUSIC_TRACKS: readonly MusicTrack[] = [
 export const DEFAULT_MUSIC_ID = MUSIC_TRACKS[0].id;
 export function getMusicTrack(
   id: string | null | undefined,
+  tracks: readonly MusicTrack[] = MUSIC_TRACKS,
 ): MusicTrack | undefined {
-  return MUSIC_TRACKS.find((track) => track.id === id);
+  return tracks.find((track) => track.id === id);
 }

@@ -7,7 +7,7 @@ export default function MusicCredits() {
         Music credits & licenses
       </summary>
       <p className="mt-3 leading-5">
-        Music by Kevin MacLeod (
+        Default music by Kevin MacLeod (
         <a
           href="https://incompetech.com"
           target="_blank"

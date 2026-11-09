@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlaybackState } from "@/shared/jam";
-import { getMusicTrack } from "@/shared/music";
+import { getMusicTrack, type MusicTrack } from "@/shared/music";
+import { getJamServerUrl } from "@/lib/realtime/client";
 import { MusicAudioEngine } from "@/lib/music-audio";
 import { expectedPosition } from "@/lib/playback-timing";
 import { clockNow } from "@/lib/realtime/clock";
 
 type Options = {
+  musicTracks: readonly MusicTrack[];
   playback: PlaybackState;
   serverClockOffsetMs: number;
   isClockSynced: boolean;
@@ -18,6 +20,7 @@ type Options = {
 };
 
 export function useSyncedMusicPlayer({
+  musicTracks,
   playback,
   serverClockOffsetMs,
   isClockSynced,
@@ -38,7 +41,9 @@ export function useSyncedMusicPlayer({
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const [volume, setVolume] = useState(0.7);
-  const track = getMusicTrack(playback.trackId);
+  const track = getMusicTrack(playback.trackId, musicTracks);
+  const trackId = track?.id;
+  const sourceUrl = track?.src;
   const buffer =
     loadedAudio?.trackId === track?.id ? (loadedAudio?.buffer ?? null) : null;
   const loaded = buffer !== null;
@@ -98,15 +103,20 @@ export function useSyncedMusicPlayer({
 
   useEffect(() => {
     const engine = engineRef.current;
-    if (!engine || !track) return;
+    if (!engine || !trackId || !sourceUrl) return;
     const controller = new AbortController();
     engine.stop();
     void engine
-      .load(track.src, controller.signal)
+      .load(
+        sourceUrl.startsWith("/music/uploads/")
+          ? `${getJamServerUrl()}${sourceUrl}`
+          : sourceUrl,
+        controller.signal,
+      )
       .then((buffer) => {
         if (controller.signal.aborted) return;
         setError("");
-        setLoadedAudio({ trackId: track.id, buffer });
+        setLoadedAudio({ trackId, buffer });
         onDurationChange(buffer.duration);
       })
       .catch((reason: unknown) => {
@@ -121,17 +131,17 @@ export function useSyncedMusicPlayer({
       controller.abort();
       engine.stop();
     };
-  }, [track, retry, onDurationChange]);
+  }, [trackId, sourceUrl, retry, onDurationChange]);
 
   useEffect(() => {
-    if (isSyncing && enabled && loaded && isClockSynced && track && !error)
-      onPlaybackReady(track.id);
+    if (isSyncing && enabled && loaded && isClockSynced && trackId && !error)
+      onPlaybackReady(trackId);
   }, [
     isSyncing,
     enabled,
     loaded,
     isClockSynced,
-    track,
+    trackId,
     error,
     onPlaybackReady,
   ]);

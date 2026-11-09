@@ -6,7 +6,13 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { DEFAULT_VIDEO_ID } from "../shared/jam.ts";
-import { DEFAULT_MUSIC_ID, getMusicTrack } from "../shared/music.ts";
+import {
+  DEFAULT_MUSIC_ID,
+  getMusicTrack,
+  MUSIC_TRACKS,
+  type MusicTrack,
+} from "../shared/music.ts";
+import { MAX_ROOM_UPLOADS } from "../shared/music-upload.ts";
 import type {
   ApiErrorCode,
   ChatMessage,
@@ -35,6 +41,7 @@ type RoomRecord = {
     readyParticipantIds: Set<string>;
   } | null;
   queue: QueueItem[];
+  musicTracks: MusicTrack[];
   messages: ChatMessage[];
   updatedAtMs: number;
   roundTrips: Map<string, number>;
@@ -91,6 +98,7 @@ export class RoomManager {
       },
       sync: null,
       queue: [],
+      musicTracks: [...MUSIC_TRACKS],
       messages: [],
       updatedAtMs: now,
       roundTrips: new Map(),
@@ -248,7 +256,7 @@ export class RoomManager {
     if (mediaType !== "music" && mediaType !== "video") {
       throw new RoomError("INVALID_INPUT", "Choose music or video.");
     }
-    if (mediaType === "music" && !getMusicTrack(trackId)) {
+    if (mediaType === "music" && !getMusicTrack(trackId, room.musicTracks)) {
       throw new RoomError(
         "INVALID_INPUT",
         "Choose a track from the music library.",
@@ -392,7 +400,10 @@ export class RoomManager {
     trackId: unknown,
   ): RoomSnapshot {
     const room = this.getAuthorizedRoom(code, participantId);
-    if (typeof trackId !== "string" || !getMusicTrack(trackId)) {
+    if (
+      typeof trackId !== "string" ||
+      !getMusicTrack(trackId, room.musicTracks)
+    ) {
       throw new RoomError(
         "INVALID_INPUT",
         "Choose a track from the music library.",
@@ -464,6 +475,44 @@ export class RoomManager {
       startsAtMs: Date.now() + leadMs,
     };
     room.sync = null;
+  }
+
+  hasRoom(code: string): boolean {
+    return this.rooms.has(code);
+  }
+
+  assertCanUpload(code: string, participantId: string): void {
+    const room = this.getAuthorizedRoom(code, participantId);
+    if (
+      room.musicTracks.filter((track) => track.isUpload).length >=
+      MAX_ROOM_UPLOADS
+    ) {
+      throw new RoomError(
+        "ROOM_LIMIT",
+        "This room already has 10 uploaded tracks.",
+      );
+    }
+    if (room.queue.length >= 100)
+      throw new RoomError("ROOM_LIMIT", "The queue is full.");
+  }
+
+  addUploadedMusic(
+    code: string,
+    participantId: string,
+    track: MusicTrack,
+  ): RoomSnapshot {
+    const room = this.getAuthorizedRoom(code, participantId);
+    if (room.musicTracks.some((item) => item.id === track.id))
+      return this.toSnapshot(room);
+    this.assertCanUpload(code, participantId);
+    room.musicTracks.push(track);
+    room.queue.push({
+      id: randomUUID(),
+      trackId: track.id,
+      mediaType: "music",
+    });
+    room.updatedAtMs = Date.now();
+    return this.toSnapshot(room);
   }
 
   pause(code: string, participantId: string): RoomSnapshot {
@@ -615,6 +664,7 @@ export class RoomManager {
           }
         : null,
       queue: [...room.queue],
+      musicTracks: [...room.musicTracks],
       messages: [...room.messages],
       updatedAtMs: room.updatedAtMs,
     };

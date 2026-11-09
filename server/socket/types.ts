@@ -7,6 +7,7 @@ import type {
   SocketData,
 } from "../../shared/jam.ts";
 import type { RoomManager } from "../room-manager.ts";
+import type { MusicUploadStore } from "../music-upload-store.ts";
 
 export type JamSocket = Socket<
   ClientToServerEvents,
@@ -27,6 +28,7 @@ export type PendingHostEnds = Map<string, ReturnType<typeof setTimeout>>;
 export type SocketServices = {
   io: JamServer;
   rooms: RoomManager;
+  uploads: MusicUploadStore;
   eventTimes: EventTimes;
   pendingHostEnds: PendingHostEnds;
 };
