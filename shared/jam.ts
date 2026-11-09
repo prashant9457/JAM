@@ -19,7 +19,7 @@ export type QueueItem = {
   mediaType: "music" | "video";
 };
 
-export const DEFAULT_VIDEO_ID = "ZTmF2v59CtI";
+export const DEFAULT_VIDEO_ID = "1E-JAofFdVQ";
 
 /** Shared playback timeline. Clients derive their local playhead from this. */
 export type PlaybackState = {
@@ -37,8 +37,8 @@ export type RoomSnapshot = {
   hostParticipantId: string;
   participants: Participant[];
   playback: PlaybackState;
-  /** Present while clients prepare the selected YouTube player before a shared start. */
-  sync: { trackId: string; readyParticipantIds: string[] } | null;
+  /** Present while clients enable and prepare their player before a shared start. */
+  sync: { id: string; trackId: string; readyParticipantIds: string[] } | null;
   queue: QueueItem[];
   messages: ChatMessage[];
   updatedAtMs: number;
@@ -80,7 +80,14 @@ export type ClientToServerEvents = {
   "room:leave": (ack: (result: ApiResult<{ ok: true }>) => void) => void;
   "clock:sync": (
     payload: { clientSentAtMs: number },
-    ack: (result: ApiResult<{ clientSentAtMs: number; serverTimeMs: number }>) => void,
+    ack: (
+      result: ApiResult<{
+        clientSentAtMs: number;
+        serverTimeMs: number;
+        serverReceivedAtMs?: number;
+        serverSentAtMs?: number;
+      }>,
+    ) => void,
   ) => void;
   "chat:send": (
     payload: { text: string },
@@ -112,7 +119,15 @@ export type ClientToServerEvents = {
   ) => void;
   "playback:ended": (ack: (result: ApiResult<RoomSnapshot>) => void) => void;
   "playback:play": (ack: (result: ApiResult<RoomSnapshot>) => void) => void;
-  "playback:ready": (payload: { trackId: string }) => void;
+  "music:play": (
+    payload: { trackId: string },
+    ack: (result: ApiResult<RoomSnapshot>) => void,
+  ) => void;
+  "playback:ready": (payload: {
+    trackId: string;
+    roundTripMs?: number;
+    syncId?: string;
+  }) => void;
   "playback:pause": (ack: (result: ApiResult<RoomSnapshot>) => void) => void;
   "playback:seek": (
     payload: { positionSeconds: number },

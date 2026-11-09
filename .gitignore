@@ -40,3 +40,17 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local agent, editor, and credential state
+/.codex/
+/.agents/
+/.aws/
+/.vscode/
+*.key
+
+# local logs and test/preview artifacts
+*.log
+/test-results/
+/playwright-report/
+/artifacts/
+/tmp/

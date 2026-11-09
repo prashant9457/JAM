@@ -1,5 +1,12 @@
-import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomInt,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { DEFAULT_VIDEO_ID } from "../shared/jam.ts";
+import { DEFAULT_MUSIC_ID, getMusicTrack } from "../shared/music.ts";
 import type {
   ApiErrorCode,
   ChatMessage,
@@ -22,10 +29,16 @@ type RoomRecord = {
   hostTokenDigest: Buffer;
   participantsBySocket: Map<string, Participant>;
   playback: PlaybackState;
-  sync: { trackId: string; readyParticipantIds: Set<string> } | null;
+  sync: {
+    id: string;
+    trackId: string;
+    readyParticipantIds: Set<string>;
+  } | null;
   queue: QueueItem[];
   messages: ChatMessage[];
   updatedAtMs: number;
+  roundTrips: Map<string, number>;
+  previousTracks: { music: string; video: string };
 };
 
 export class RoomError extends Error {
@@ -45,7 +58,10 @@ export class RoomManager {
   createRoom(socketId: string) {
     this.removeExpiredRooms();
     if (this.rooms.size >= MAX_ACTIVE_ROOMS) {
-      throw new RoomError("ROOM_LIMIT", "The server is at room capacity. Try again later.");
+      throw new RoomError(
+        "ROOM_LIMIT",
+        "The server is at room capacity. Try again later.",
+      );
     }
 
     let code: string;
@@ -61,34 +77,62 @@ export class RoomManager {
       hostParticipantId,
       hostTokenDigest: this.digestToken(hostToken),
       participantsBySocket: new Map([
-        [socketId, { id: hostParticipantId, name: this.makeName("Host"), isHost: true }],
+        [
+          socketId,
+          { id: hostParticipantId, name: this.makeName("Host"), isHost: true },
+        ],
       ]),
-      playback: { status: "idle", mediaType: "video", trackId: DEFAULT_VIDEO_ID, positionSeconds: 0, startsAtMs: null },
+      playback: {
+        status: "idle",
+        mediaType: "video",
+        trackId: DEFAULT_VIDEO_ID,
+        positionSeconds: 0,
+        startsAtMs: null,
+      },
       sync: null,
       queue: [],
       messages: [],
       updatedAtMs: now,
+      roundTrips: new Map(),
+      previousTracks: { music: DEFAULT_MUSIC_ID, video: DEFAULT_VIDEO_ID },
     };
 
     this.rooms.set(code, room);
-    return { room: this.toSnapshot(room), hostToken, selfParticipantId: hostParticipantId };
+    return {
+      room: this.toSnapshot(room),
+      hostToken,
+      selfParticipantId: hostParticipantId,
+    };
   }
 
   joinRoom(code: string, socketId: string, hostToken?: string) {
     const normalizedCode = this.normalizeCode(code);
     const room = this.rooms.get(normalizedCode);
-    if (!room) throw new RoomError("ROOM_NOT_FOUND", "That jam room does not exist or has expired.");
+    if (!room)
+      throw new RoomError(
+        "ROOM_NOT_FOUND",
+        "That jam room does not exist or has expired.",
+      );
 
     let isHost = false;
     if (hostToken !== undefined) {
       if (!this.isValidHostToken(room, hostToken)) {
-        throw new RoomError("INVALID_INPUT", "The saved host session is invalid. Join as a guest instead.");
+        throw new RoomError(
+          "INVALID_INPUT",
+          "The saved host session is invalid. Join as a guest instead.",
+        );
       }
       isHost = true;
     }
 
-    if (!room.participantsBySocket.has(socketId) && room.participantsBySocket.size >= MAX_ROOM_SIZE) {
-      throw new RoomError("ROOM_FULL", "This room has reached its participant limit.");
+    if (
+      !room.participantsBySocket.has(socketId) &&
+      room.participantsBySocket.size >= MAX_ROOM_SIZE
+    ) {
+      throw new RoomError(
+        "ROOM_FULL",
+        "This room has reached its participant limit.",
+      );
     }
 
     const participantId = isHost ? room.hostParticipantId : randomUUID();
@@ -107,7 +151,10 @@ export class RoomManager {
     const room = this.rooms.get(code);
     if (!room) return undefined;
 
+    const participant = room.participantsBySocket.get(socketId);
     room.participantsBySocket.delete(socketId);
+    if (participant) room.sync?.readyParticipantIds.delete(participant.id);
+    if (participant) room.roundTrips.delete(participant.id);
     this.startIfEveryoneReady(room);
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
@@ -116,50 +163,96 @@ export class RoomManager {
   /** Permanently closes a room when its host leaves. */
   endRoom(code: string, socketId: string): boolean {
     const room = this.rooms.get(code);
-    if (!room || room.participantsBySocket.get(socketId)?.isHost !== true) return false;
+    if (!room || room.participantsBySocket.get(socketId)?.isHost !== true)
+      return false;
     this.rooms.delete(code);
     return true;
   }
 
   hasConnectedHost(code: string): boolean {
     const room = this.rooms.get(code);
-    return Boolean(room && [...room.participantsBySocket.values()].some((participant) => participant.isHost));
+    return Boolean(
+      room &&
+      [...room.participantsBySocket.values()].some(
+        (participant) => participant.isHost,
+      ),
+    );
   }
 
   endRoomByCode(code: string): boolean {
     return this.rooms.delete(code);
   }
 
-  setTrack(code: string, participantId: string, trackId: unknown): RoomSnapshot {
+  setTrack(
+    code: string,
+    participantId: string,
+    trackId: unknown,
+  ): RoomSnapshot {
     const room = this.getAuthorizedRoom(code, participantId);
-    if (trackId !== null && (typeof trackId !== "string" || !TRACK_ID_PATTERN.test(trackId))) {
+    if (
+      trackId !== null &&
+      (typeof trackId !== "string" || !TRACK_ID_PATTERN.test(trackId))
+    ) {
       throw new RoomError("INVALID_INPUT", "Track ID has an invalid format.");
     }
 
-    room.playback = { status: "idle", mediaType: "video", trackId, positionSeconds: 0, startsAtMs: null };
+    room.playback = {
+      status: "idle",
+      mediaType: "video",
+      trackId,
+      positionSeconds: 0,
+      startsAtMs: null,
+    };
     room.sync = null;
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
 
-  setMediaType(code: string, participantId: string, mediaType: unknown): RoomSnapshot {
+  setMediaType(
+    code: string,
+    participantId: string,
+    mediaType: unknown,
+  ): RoomSnapshot {
     const room = this.getAuthorizedRoom(code, participantId);
     if (mediaType !== "music" && mediaType !== "video") {
       throw new RoomError("INVALID_INPUT", "Choose music or video.");
     }
-    room.playback = { ...room.playback, mediaType };
+    if (room.playback.mediaType === mediaType) return this.toSnapshot(room);
+    if (room.playback.trackId)
+      room.previousTracks[room.playback.mediaType] = room.playback.trackId;
+    room.playback = {
+      status: "paused",
+      mediaType,
+      trackId: room.previousTracks[mediaType],
+      positionSeconds: 0,
+      startsAtMs: null,
+    };
     room.sync = null;
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
 
-  addToQueue(code: string, participantId: string, trackId: unknown, mediaType: unknown): RoomSnapshot {
+  addToQueue(
+    code: string,
+    participantId: string,
+    trackId: unknown,
+    mediaType: unknown,
+  ): RoomSnapshot {
     const room = this.getAuthorizedRoom(code, participantId);
     if (typeof trackId !== "string" || !TRACK_ID_PATTERN.test(trackId)) {
-      throw new RoomError("INVALID_INPUT", "The YouTube video ID has an invalid format.");
+      throw new RoomError(
+        "INVALID_INPUT",
+        "The YouTube video ID has an invalid format.",
+      );
     }
     if (mediaType !== "music" && mediaType !== "video") {
       throw new RoomError("INVALID_INPUT", "Choose music or video.");
+    }
+    if (mediaType === "music" && !getMusicTrack(trackId)) {
+      throw new RoomError(
+        "INVALID_INPUT",
+        "Choose a track from the music library.",
+      );
     }
     if (room.queue.length >= 100) {
       throw new RoomError("ROOM_LIMIT", "The queue can hold up to 100 items.");
@@ -170,13 +263,22 @@ export class RoomManager {
     return this.toSnapshot(room);
   }
 
-  moveQueueItem(code: string, participantId: string, itemId: unknown, toIndex: unknown): RoomSnapshot {
+  moveQueueItem(
+    code: string,
+    participantId: string,
+    itemId: unknown,
+    toIndex: unknown,
+  ): RoomSnapshot {
     const room = this.getAuthorizedRoom(code, participantId);
     if (typeof itemId !== "string" || !Number.isInteger(toIndex)) {
       throw new RoomError("INVALID_INPUT", "Choose a valid queue position.");
     }
     const fromIndex = room.queue.findIndex((item) => item.id === itemId);
-    if (fromIndex < 0 || (toIndex as number) < 0 || (toIndex as number) >= room.queue.length) {
+    if (
+      fromIndex < 0 ||
+      (toIndex as number) < 0 ||
+      (toIndex as number) >= room.queue.length
+    ) {
       throw new RoomError("INVALID_INPUT", "That queue item no longer exists.");
     }
     const [item] = room.queue.splice(fromIndex, 1);
@@ -185,22 +287,36 @@ export class RoomManager {
     return this.toSnapshot(room);
   }
 
-  removeQueueItem(code: string, participantId: string, itemId: unknown): RoomSnapshot {
+  removeQueueItem(
+    code: string,
+    participantId: string,
+    itemId: unknown,
+  ): RoomSnapshot {
     const room = this.getAuthorizedRoom(code, participantId);
-    if (typeof itemId !== "string") throw new RoomError("INVALID_INPUT", "Choose a valid queue item.");
+    if (typeof itemId !== "string")
+      throw new RoomError("INVALID_INPUT", "Choose a valid queue item.");
     const index = room.queue.findIndex((item) => item.id === itemId);
-    if (index < 0) throw new RoomError("INVALID_INPUT", "That queue item no longer exists.");
+    if (index < 0)
+      throw new RoomError("INVALID_INPUT", "That queue item no longer exists.");
     room.queue.splice(index, 1);
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
 
-  playQueueItem(code: string, participantId: string, itemId: unknown): RoomSnapshot {
+  playQueueItem(
+    code: string,
+    participantId: string,
+    itemId: unknown,
+  ): RoomSnapshot {
     const room = this.getAuthorizedRoom(code, participantId);
-    if (typeof itemId !== "string") throw new RoomError("INVALID_INPUT", "Choose a valid queue item.");
+    if (typeof itemId !== "string")
+      throw new RoomError("INVALID_INPUT", "Choose a valid queue item.");
     const index = room.queue.findIndex((item) => item.id === itemId);
-    if (index < 0) throw new RoomError("INVALID_INPUT", "That queue item no longer exists.");
+    if (index < 0)
+      throw new RoomError("INVALID_INPUT", "That queue item no longer exists.");
     const [item] = room.queue.splice(index, 1);
+    if (room.playback.trackId)
+      room.previousTracks[room.playback.mediaType] = room.playback.trackId;
     room.playback = {
       status: "paused",
       mediaType: item.mediaType,
@@ -208,7 +324,11 @@ export class RoomManager {
       positionSeconds: 0,
       startsAtMs: null,
     };
-    room.sync = { trackId: item.trackId, readyParticipantIds: new Set() };
+    room.sync = {
+      id: randomUUID(),
+      trackId: item.trackId,
+      readyParticipantIds: new Set(),
+    };
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
@@ -217,6 +337,8 @@ export class RoomManager {
     const room = this.getAuthorizedRoom(code, participantId);
     const nextItem = room.queue.shift();
     if (nextItem) {
+      if (room.playback.trackId)
+        room.previousTracks[room.playback.mediaType] = room.playback.trackId;
       room.playback = {
         status: "paused",
         mediaType: nextItem.mediaType,
@@ -224,7 +346,11 @@ export class RoomManager {
         positionSeconds: 0,
         startsAtMs: null,
       };
-      room.sync = { trackId: nextItem.trackId, readyParticipantIds: new Set() };
+      room.sync = {
+        id: randomUUID(),
+        trackId: nextItem.trackId,
+        readyParticipantIds: new Set(),
+      };
     } else {
       room.playback = {
         ...room.playback,
@@ -240,23 +366,81 @@ export class RoomManager {
 
   play(code: string, participantId: string): RoomSnapshot {
     const room = this.getAuthorizedRoom(code, participantId);
+    if (room.sync) return this.toSnapshot(room);
     if (!room.playback.trackId) {
-      throw new RoomError("NO_TRACK_SELECTED", "Select a track before starting playback.");
+      throw new RoomError(
+        "NO_TRACK_SELECTED",
+        "Select a track before starting playback.",
+      );
     }
 
     const trackId = room.playback.trackId;
-    room.playback = { ...room.playback, status: "paused", positionSeconds: this.currentPosition(room.playback), startsAtMs: null };
-    room.sync = { trackId, readyParticipantIds: new Set() };
+    room.playback = {
+      ...room.playback,
+      status: "paused",
+      positionSeconds: this.currentPosition(room.playback),
+      startsAtMs: null,
+    };
+    room.sync = { id: randomUUID(), trackId, readyParticipantIds: new Set() };
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
   }
 
-  /** Start only once every connected participant reports that their player is cued. */
-  markPlaybackReady(code: string, socketId: string, trackId: unknown): RoomSnapshot | undefined {
+  playMusic(
+    code: string,
+    participantId: string,
+    trackId: unknown,
+  ): RoomSnapshot {
+    const room = this.getAuthorizedRoom(code, participantId);
+    if (typeof trackId !== "string" || !getMusicTrack(trackId)) {
+      throw new RoomError(
+        "INVALID_INPUT",
+        "Choose a track from the music library.",
+      );
+    }
+    if (room.playback.trackId)
+      room.previousTracks[room.playback.mediaType] = room.playback.trackId;
+    room.previousTracks.music = trackId;
+    room.playback = {
+      status: "paused",
+      mediaType: "music",
+      trackId,
+      positionSeconds: 0,
+      startsAtMs: null,
+    };
+    room.sync = { id: randomUUID(), trackId, readyParticipantIds: new Set() };
+    room.updatedAtMs = Date.now();
+    return this.toSnapshot(room);
+  }
+
+  /** Start after every connected participant has enabled/prepared playback. */
+  markPlaybackReady(
+    code: string,
+    socketId: string,
+    trackId: unknown,
+    roundTripMs?: number,
+    syncId?: string,
+  ): RoomSnapshot | undefined {
     const room = this.rooms.get(code);
     const participant = room?.participantsBySocket.get(socketId);
-    if (!room || !participant || typeof trackId !== "string" || !room.sync || room.sync.trackId !== trackId) return;
+    if (
+      !room ||
+      !participant ||
+      typeof trackId !== "string" ||
+      !room.sync ||
+      room.sync.trackId !== trackId
+    )
+      return;
+    if (syncId !== undefined && syncId !== room.sync.id) return;
     room.sync.readyParticipantIds.add(participant.id);
+    if (
+      typeof roundTripMs === "number" &&
+      Number.isFinite(roundTripMs) &&
+      roundTripMs >= 0 &&
+      roundTripMs <= 10_000
+    ) {
+      room.roundTrips.set(participant.id, roundTripMs);
+    }
     this.startIfEveryoneReady(room);
     room.updatedAtMs = Date.now();
     return this.toSnapshot(room);
@@ -264,9 +448,21 @@ export class RoomManager {
 
   private startIfEveryoneReady(room: RoomRecord): void {
     if (!room.sync || room.participantsBySocket.size === 0) return;
-    const connectedIds = [...room.participantsBySocket.values()].map((participant) => participant.id);
-    if (!connectedIds.every((id) => room.sync?.readyParticipantIds.has(id))) return;
-    room.playback = { ...room.playback, status: "playing", startsAtMs: Date.now() + PLAY_SCHEDULE_LEAD_MS };
+    const connectedIds = [...room.participantsBySocket.values()].map(
+      (participant) => participant.id,
+    );
+    if (!connectedIds.every((id) => room.sync?.readyParticipantIds.has(id)))
+      return;
+    const maxRoundTrip = Math.max(
+      0,
+      ...connectedIds.map((id) => room.roundTrips.get(id) ?? 0),
+    );
+    const leadMs = Math.max(PLAY_SCHEDULE_LEAD_MS, maxRoundTrip * 2 + 250);
+    room.playback = {
+      ...room.playback,
+      status: "playing",
+      startsAtMs: Date.now() + leadMs,
+    };
     room.sync = null;
   }
 
@@ -283,10 +479,21 @@ export class RoomManager {
     return this.toSnapshot(room);
   }
 
-  seek(code: string, participantId: string, positionSeconds: number): RoomSnapshot {
+  seek(
+    code: string,
+    participantId: string,
+    positionSeconds: number,
+  ): RoomSnapshot {
     const room = this.getAuthorizedRoom(code, participantId);
-    if (!Number.isFinite(positionSeconds) || positionSeconds < 0 || positionSeconds > 43_200) {
-      throw new RoomError("INVALID_INPUT", "Seek position must be between 0 and 12 hours.");
+    if (
+      !Number.isFinite(positionSeconds) ||
+      positionSeconds < 0 ||
+      positionSeconds > 43_200
+    ) {
+      throw new RoomError(
+        "INVALID_INPUT",
+        "Seek position must be between 0 and 12 hours.",
+      );
     }
 
     room.playback = {
@@ -299,19 +506,33 @@ export class RoomManager {
     return this.toSnapshot(room);
   }
 
-  sendMessage(code: string, participantId: string, messageText: unknown): RoomSnapshot {
+  sendMessage(
+    code: string,
+    participantId: string,
+    messageText: unknown,
+  ): RoomSnapshot {
     const room = this.rooms.get(code);
-    if (!room) throw new RoomError("ROOM_NOT_FOUND", "That jam room has expired.");
+    if (!room)
+      throw new RoomError("ROOM_NOT_FOUND", "That jam room has expired.");
 
-    const participant = [...room.participantsBySocket.values()].find((member) => member.id === participantId);
-    if (!participant) throw new RoomError("NOT_IN_ROOM", "Join the room before sending a message.");
+    const participant = [...room.participantsBySocket.values()].find(
+      (member) => member.id === participantId,
+    );
+    if (!participant)
+      throw new RoomError(
+        "NOT_IN_ROOM",
+        "Join the room before sending a message.",
+      );
     if (typeof messageText !== "string") {
       throw new RoomError("MESSAGE_INVALID", "Message must be plain text.");
     }
 
     const text = messageText.trim();
     if (!text || text.length > 500) {
-      throw new RoomError("MESSAGE_INVALID", "Messages must be between 1 and 500 characters.");
+      throw new RoomError(
+        "MESSAGE_INVALID",
+        "Messages must be between 1 and 500 characters.",
+      );
     }
 
     const message: ChatMessage = {
@@ -322,14 +543,18 @@ export class RoomManager {
       createdAtMs: Date.now(),
     };
     room.messages.push(message);
-    if (room.messages.length > 100) room.messages.splice(0, room.messages.length - 100);
+    if (room.messages.length > 100)
+      room.messages.splice(0, room.messages.length - 100);
     room.updatedAtMs = message.createdAtMs;
     return this.toSnapshot(room);
   }
 
   removeExpiredRooms(now = Date.now()) {
     for (const [code, room] of this.rooms) {
-      if (room.participantsBySocket.size === 0 && now - room.updatedAtMs > ROOM_TTL_MS) {
+      if (
+        room.participantsBySocket.size === 0 &&
+        now - room.updatedAtMs > ROOM_TTL_MS
+      ) {
         this.rooms.delete(code);
       }
     }
@@ -337,16 +562,23 @@ export class RoomManager {
 
   private getAuthorizedRoom(code: string, participantId: string): RoomRecord {
     const room = this.rooms.get(code);
-    if (!room) throw new RoomError("ROOM_NOT_FOUND", "That jam room has expired.");
+    if (!room)
+      throw new RoomError("ROOM_NOT_FOUND", "That jam room has expired.");
     if (participantId !== room.hostParticipantId) {
-      throw new RoomError("HOST_ONLY", "Only the room host can control playback.");
+      throw new RoomError(
+        "HOST_ONLY",
+        "Only the room host can control playback.",
+      );
     }
     return room;
   }
 
   private normalizeCode(code: string): string {
     if (typeof code !== "string" || !ROOM_CODE_PATTERN.test(code)) {
-      throw new RoomError("INVALID_INPUT", "Enter a valid six-digit room code.");
+      throw new RoomError(
+        "INVALID_INPUT",
+        "Enter a valid six-digit room code.",
+      );
     }
     return code;
   }
@@ -375,7 +607,13 @@ export class RoomManager {
       hostParticipantId: room.hostParticipantId,
       participants: [...room.participantsBySocket.values()],
       playback: { ...room.playback },
-      sync: room.sync ? { trackId: room.sync.trackId, readyParticipantIds: [...room.sync.readyParticipantIds] } : null,
+      sync: room.sync
+        ? {
+            id: room.sync.id,
+            trackId: room.sync.trackId,
+            readyParticipantIds: [...room.sync.readyParticipantIds],
+          }
+        : null,
       queue: [...room.queue],
       messages: [...room.messages],
       updatedAtMs: room.updatedAtMs,

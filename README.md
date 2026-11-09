@@ -1,6 +1,6 @@
 # Jam
 
-Jam is a room-based watch/listen room. Each browser embeds the selected YouTube video locally; the realtime server shares room membership, chat messages, and a scheduled playback timeline.
+Jam is a room-based watch/listen room. Video uses YouTube; music uses bundled audio and a synchronized Web Audio player. The realtime server shares room membership, chat, the queue, and scheduled playback.
 
 ## Requirements
 
@@ -37,7 +37,9 @@ shared/jam.ts                Client/server room and Socket.IO contracts
 - Room state is held in memory and is lost when the realtime server restarts.
 - Empty rooms expire after two hours; active rooms allow up to 16 participants. The server caps its in-memory room count at 10,000.
 - A random host credential is returned only to the creator, stored as a SHA-256 digest by the server, and retained in that browser's session storage so the host can reconnect. The room code alone does not grant playback control.
-- New rooms currently use the YouTube video `ZTmF2v59CtI`. Every participant must click **Enable video** once so the browser can allow playback with sound. The YouTube embed must permit playback on other sites; if it does not, the room displays a link to open it on YouTube.
+- New rooms use the YouTube video `1E-JAofFdVQ`. Playback prompts stay inside the room. The YouTube embed must permit playback on other sites; otherwise the room displays an external link.
+- Music mode includes four Kevin MacLeod tracks, with credits in the library and `public/music/CREDITS.md`. The host can play tracks, add to the shared queue, and reorder/remove items. Each listener controls their own volume. Normal room interactions enable audio where the browser allows it; an Enable audio button is the fallback.
+- Music starts after every connected listener has decoded the selected track and enabled audio. Ten NTP-style clock probes, RTT-aware scheduling, audio-clock starts, output latency compensation, and drift correction align playback. See `docs/music-architecture.md`.
 - Chat is room-wide, limited to 500 characters per message, and keeps the latest 100 messages in memory.
 - Playback uses a server clock offset estimate, scheduled starts, and periodic drift correction. Network buffering and browser autoplay rules mean devices can still differ slightly.
 - The realtime server is a separate process. In development it binds to the network interfaces and accepts loopback/private-LAN page origins. For production, configure `NEXT_PUBLIC_JAM_SERVER_URL` and `JAM_ALLOWED_ORIGINS` with the deployed realtime URL and exact site origin.

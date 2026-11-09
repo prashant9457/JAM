@@ -9,10 +9,10 @@ import RoomChatDialog from "./RoomChatDialog";
 import RoomInfoDialog from "./RoomInfoDialog";
 import RoomEndedNotice from "./RoomEndedNotice";
 import RoomConnectionNotice from "./RoomConnectionNotice";
-import RoomPreparationOverlay from "./RoomPreparationOverlay";
 import TrackWorkspace from "./TrackWorkspace";
 import { useJamRoomSession } from "./hooks/useJamRoomSession";
 import { useJamRoomControls } from "./hooks/useJamRoomControls";
+import { getMusicTrack } from "@/shared/music";
 
 type JamRoomProps = {
   code: string;
@@ -25,37 +25,27 @@ export default function JamRoom({ code }: JamRoomProps) {
   const [videoDurationSeconds, setVideoDurationSeconds] = useState(0);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isRoomInfoOpen, setIsRoomInfoOpen] = useState(false);
-  const [isVideoFullscreenFallback, setIsVideoFullscreenFallback] = useState(false);
+  const [isVideoFullscreenFallback, setIsVideoFullscreenFallback] =
+    useState(false);
   const [isPlayerPrepared, setIsPlayerPrepared] = useState(false);
-  const [playerStartupMs, setPlayerStartupMs] = useState<number | null>(null);
-  const [playerLoadedSeconds, setPlayerLoadedSeconds] = useState<number | null>(null);
-  const [preparationError, setPreparationError] = useState("");
   const playback = session.room?.playback;
   const isPlaying = playback?.status === "playing";
   const positionSeconds = playback
     ? playback.positionSeconds +
       (playback.status === "playing" && playback.startsAtMs !== null
-        ? Math.max(0, clockMs + session.serverClockOffsetMs - playback.startsAtMs) / 1_000
+        ? Math.max(
+            0,
+            clockMs + session.serverClockOffsetMs - playback.startsAtMs,
+          ) / 1_000
         : 0)
     : 0;
-  const isPreparing = session.connectionStatus !== "connected" || !session.isClockSynced || !isPlayerPrepared;
+  const isPreparing =
+    session.connectionStatus !== "connected" ||
+    !session.isClockSynced ||
+    (Boolean(playback?.trackId) && !isPlayerPrepared);
 
-  useEffect(() => {
-    if (session.connectionStatus === "connected" && session.room && !playback?.trackId) {
-      setIsPlayerPrepared(true);
-    }
-  }, [session.connectionStatus, session.room, playback?.trackId]);
-
-  function handlePlayerPrepared(measurement: { startupMs: number; loadedSeconds: number }) {
-    setPlayerStartupMs(measurement.startupMs);
-    setPlayerLoadedSeconds(measurement.loadedSeconds);
+  function handlePlayerPrepared() {
     setIsPlayerPrepared(true);
-    setPreparationError("");
-  }
-
-  function continueWithoutWarmup() {
-    setIsPlayerPrepared(true);
-    setPreparationError("");
   }
 
   useEffect(() => {
@@ -64,7 +54,9 @@ export default function JamRoom({ code }: JamRoomProps) {
   }, []);
 
   return (
-    <div className={`grid h-dvh grid-rows-[48px_minmax(0,1fr)_80px] bg-[#0b0b0b] ${isVideoFullscreenFallback ? "overflow-visible" : "overflow-hidden"}`}>
+    <div
+      className={`grid h-dvh grid-rows-[48px_minmax(0,1fr)_80px] bg-[#0b0b0b] ${isVideoFullscreenFallback ? "overflow-visible" : "overflow-hidden"}`}
+    >
       <RoomHeader
         connectionStatus={session.connectionStatus}
         onOpenChat={() => setIsChatOpen(true)}
@@ -83,14 +75,23 @@ export default function JamRoom({ code }: JamRoomProps) {
         </div>
 
         <TrackWorkspace
-          playback={playback ?? {
-            status: "idle",
-            mediaType: "video",
-            trackId: null,
-            positionSeconds: 0,
-            startsAtMs: null,
-          }}
+          playback={
+            playback ?? {
+              status: "idle",
+              mediaType: "video",
+              trackId: null,
+              positionSeconds: 0,
+              startsAtMs: null,
+            }
+          }
           serverClockOffsetMs={session.serverClockOffsetMs}
+          clockRoundTripMs={session.clockRoundTripMs}
+          isClockSynced={
+            session.isClockSynced &&
+            session.connectionStatus === "connected" &&
+            !session.roomEnded
+          }
+          onPlayMusic={controls.playMusic}
           onDurationChange={setVideoDurationSeconds}
           isHost={session.isHost}
           queue={session.room?.queue ?? []}
@@ -105,10 +106,16 @@ export default function JamRoom({ code }: JamRoomProps) {
           isSyncing={Boolean(session.room?.sync)}
           onPlaybackReady={session.reportPlaybackReady}
           readyCount={session.room?.sync?.readyParticipantIds.length ?? 0}
+          isPlaybackReady={Boolean(
+            session.selfParticipantId &&
+            session.room?.sync?.readyParticipantIds.includes(
+              session.selfParticipantId,
+            ),
+          )}
           participantCount={session.room?.participants.length ?? 0}
           isPreparing={isPreparing}
           onPreparationReady={handlePlayerPrepared}
-          onPreparationError={setPreparationError}
+          onPreparationError={handlePlayerPrepared}
         />
 
         <div className="hidden min-h-0 2xl:block">
@@ -138,6 +145,12 @@ export default function JamRoom({ code }: JamRoomProps) {
       </div>
 
       <PlayerBar
+        title={
+          playback?.mediaType === "music"
+            ? (getMusicTrack(playback.trackId)?.title ?? "Shared music")
+            : "Shared video"
+        }
+        mediaType={playback?.mediaType ?? "video"}
         trackSelected={Boolean(playback?.trackId)}
         isPlaying={Boolean(isPlaying)}
         isSyncing={Boolean(session.room?.sync)}
@@ -147,17 +160,12 @@ export default function JamRoom({ code }: JamRoomProps) {
         onTogglePlayback={() => controls.togglePlayback(Boolean(isPlaying))}
       />
 
-      {session.roomEnded
-        ? <RoomEndedNotice secondsRemaining={session.redirectSeconds} />
-        : <RoomConnectionNotice connectionStatus={session.connectionStatus} errorMessage={session.errorMessage} />}
-      {isPreparing && !session.roomEnded && (
-        <RoomPreparationOverlay
-          roundTripMs={session.clockRoundTripMs}
-          playerStartupMs={playerStartupMs}
-          playerLoadedSeconds={playerLoadedSeconds}
-          error={session.errorMessage || preparationError}
-          allowContinue={session.connectionStatus === "connected" && session.isClockSynced && Boolean(preparationError)}
-          onContinue={continueWithoutWarmup}
+      {session.roomEnded ? (
+        <RoomEndedNotice secondsRemaining={session.redirectSeconds} />
+      ) : (
+        <RoomConnectionNotice
+          connectionStatus={session.connectionStatus}
+          errorMessage={session.errorMessage}
         />
       )}
     </div>

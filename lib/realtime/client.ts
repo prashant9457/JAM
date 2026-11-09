@@ -1,7 +1,12 @@
 "use client";
 
 import { io, type Socket } from "socket.io-client";
-import type { ApiResult, ClientToServerEvents, ServerToClientEvents } from "@/shared/jam";
+import type {
+  ApiResult,
+  ClientToServerEvents,
+  ServerToClientEvents,
+} from "@/shared/jam";
+import { clockMeasurement, clockNow } from "./clock";
 
 export type JamSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -26,7 +31,10 @@ export function waitForSocketConnection(socket: JamSocket): Promise<void> {
   if (socket.connected) return Promise.resolve();
 
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => finish(new Error("The Jam server did not respond.")), 10_000);
+    const timeout = setTimeout(
+      () => finish(new Error("The Jam server did not respond.")),
+      10_000,
+    );
 
     function cleanup() {
       clearTimeout(timeout);
@@ -57,18 +65,24 @@ export function waitForSocketConnection(socket: JamSocket): Promise<void> {
 export type ClockSyncResult = { offsetMs: number; roundTripMs: number };
 
 function measureClockOffset(socket: JamSocket): Promise<ClockSyncResult> {
-  if (!socket.connected) return Promise.reject(new Error("Socket is not connected."));
+  if (!socket.connected)
+    return Promise.reject(new Error("Socket is not connected."));
 
-  const clientSentAtMs = Date.now();
+  const clientSentAtMs = clockNow();
   return new Promise((resolve, reject) => {
     socket.timeout(5_000).emit(
       "clock:sync",
       { clientSentAtMs },
       (
         timeoutError: Error | null,
-        result: ApiResult<{ clientSentAtMs: number; serverTimeMs: number }>,
+        result: ApiResult<{
+          clientSentAtMs: number;
+          serverTimeMs: number;
+          serverReceivedAtMs?: number;
+          serverSentAtMs?: number;
+        }>,
       ) => {
-        const clientReceivedAtMs = Date.now();
+        const clientReceivedAtMs = clockNow();
         if (timeoutError) {
           reject(new Error("Could not synchronize with the room clock."));
           return;
@@ -78,22 +92,35 @@ function measureClockOffset(socket: JamSocket): Promise<ClockSyncResult> {
           return;
         }
 
-        const clientMidpoint = (clientSentAtMs + clientReceivedAtMs) / 2;
-        resolve({
-          offsetMs: result.data.serverTimeMs - clientMidpoint,
-          roundTripMs: clientReceivedAtMs - clientSentAtMs,
-        });
+        resolve(
+          clockMeasurement(
+            clientSentAtMs,
+            result.data.serverReceivedAtMs ?? result.data.serverTimeMs,
+            result.data.serverSentAtMs ?? result.data.serverTimeMs,
+            clientReceivedAtMs,
+          ),
+        );
       },
     );
   });
 }
 
 /** Estimate server time from several probes and select the least delayed sample. */
-export async function synchronizeClock(socket: JamSocket): Promise<ClockSyncResult> {
-  const measurements = await Promise.allSettled(Array.from({ length: 5 }, () => measureClockOffset(socket)));
+export async function synchronizeClock(
+  socket: JamSocket,
+): Promise<ClockSyncResult> {
+  const measurements = await Promise.allSettled(
+    Array.from({ length: 10 }, () => measureClockOffset(socket)),
+  );
   const successful = measurements
-    .filter((result): result is PromiseFulfilledResult<ClockSyncResult> => result.status === "fulfilled")
+    .filter(
+      (result): result is PromiseFulfilledResult<ClockSyncResult> =>
+        result.status === "fulfilled",
+    )
     .map((result) => result.value);
-  if (successful.length === 0) throw new Error("Could not synchronize with the room clock.");
-  return successful.reduce((best, sample) => sample.roundTripMs < best.roundTripMs ? sample : best);
+  if (successful.length === 0)
+    throw new Error("Could not synchronize with the room clock.");
+  return successful.reduce((best, sample) =>
+    sample.roundTripMs < best.roundTripMs ? sample : best,
+  );
 }
